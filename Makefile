@@ -1,5 +1,5 @@
 compile:
-	rebar compile skip_deps=true
+	./rebar compile
 
 eunit:	
-	rebar eunit skip_deps=true
+	./rebar eunit

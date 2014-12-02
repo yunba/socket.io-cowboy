@@ -1,8 +1,11 @@
 ebin
 stress/ebin
+.idea
 .eunit
+.rebar
 deps
 *.o
 *.beam
 *.plt
 *.dump
+*.iml
