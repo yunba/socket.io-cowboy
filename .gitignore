@@ -1,5 +1,7 @@
 ebin
 stress/ebin
+demo/log
+demo/priv
 .idea
 .eunit
 .rebar

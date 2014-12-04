@@ -12,11 +12,14 @@ start() ->
     ok = application:start(ssl),
     ok = application:start(ranch),
     ok = application:start(cowboy),
+    ok = application:start(syntax_tools),
+    ok = application:start(compiler),
+    ok = application:start(goldrush),
     ok = application:start(socketio),
 
     Dispatch = cowboy_router:compile([
                                       {'_', [
-                                             {"/socket.io/1/[...]", socketio_handler, [socketio_session:configure([{heartbeat, 5000},
+                                             {"/socket.io/[...]", socketio_handler, [socketio_session:configure([{heartbeat, 5000},
                                                                                                                    {heartbeat_timeout, 30000},
                                                                                                                    {session_timeout, 30000},
                                                                                                                    {callback, ?MODULE},
@@ -34,7 +37,7 @@ start() ->
     demo_mgr:start_link(),
 
     cowboy:start_http(socketio_http_listener, 100, [{host, "127.0.0.1"},
-                                                    {port, 8080}], [{env, [{dispatch, Dispatch}]}]).
+                                                    {port, 8181}], [{env, [{dispatch, Dispatch}]}]).
 
 %% ---- Handlers
 open(Pid, Sid, _Opts) ->
@@ -51,6 +54,11 @@ recv(_Pid, _Sid, {json, <<>>, Json}, SessionState = #session_state{}) ->
 recv(Pid, _Sid, {message, <<>>, Message}, SessionState = #session_state{}) ->
     socketio_session:send_message(Pid, Message),
     {ok, SessionState};
+
+recv(Pid, _Sid, {event, _EndPoint, EventName, EventObj}, SessionState = #session_state{}) ->
+  error_logger:info_msg("recv event~nname: ~p~nargs: ~p~n", [EventName, EventObj]),
+  socketio_session:emit(Pid, <<"connectack">>, {<<"test">>, <<"rr">>}),
+  {ok, SessionState};
 
 recv(Pid, Sid, Message, SessionState = #session_state{}) ->
     error_logger:info_msg("recv ~p ~p ~p~n", [Pid, Sid, Message]),
