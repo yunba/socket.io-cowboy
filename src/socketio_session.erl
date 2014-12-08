@@ -256,10 +256,10 @@ process_messages([Message|Rest], State = #state{id = SessionId, callback = Callb
                 {disconnect, NewSessionState} ->
                     {stop, normal, ok, State#state{session_state = NewSessionState}}
             end;
-        {event, <<>>, EndPoint, EventName, EventArgs} ->
-            process_event(EndPoint, EventName, EventArgs, Rest, State);
-        {event, Id, EndPoint, EventName, EventArgs} ->
+        {event, Id, EndPoint, EventName, EventArgs} when is_integer(Id) ->
             send(self(), {ack, Id}),
+            process_event(EndPoint, EventName, EventArgs, Rest, State);
+        {event, _, EndPoint, EventName, EventArgs} ->
             process_event(EndPoint, EventName, EventArgs, Rest, State);
         {ack, _Id} ->
             process_messages(Rest, State);

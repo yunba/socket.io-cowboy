@@ -68,12 +68,22 @@ event(Id, EndPoint, EventName, EventArgs) when is_list(EventArgs) ->
   EventNameBin = make_sure_binary(EventName),
   EventBin = jsx:encode([{<<"name">>, EventNameBin},{<<"args">>, [EventArgs]}]),
   <<"5:", IdBin/binary, ":", EndPoint/binary, ":", EventBin/binary>>;
+event(Id, EndPoint, EventName, undefined) ->
+  IdBin = make_sure_binary(Id),
+  EventNameBin = make_sure_binary(EventName),
+  EventBin = jsx:encode([{<<"name">>, EventNameBin}]),
+  <<"5:", IdBin/binary, ":", EndPoint/binary, ":", EventBin/binary>>;
 event(Id, EndPoint, EventName, EventArgs) ->
   event(Id, EndPoint, EventName, [EventArgs]).
 
-ack(Id) ->
+ack(Id) when is_integer(Id) ->
   IdBin = integer_to_binary(Id),
-  <<"6:::", IdBin/binary>>.
+  <<"6:::", IdBin/binary>>;
+ack(Id) when is_list(Id) ->
+  IdBin = list_to_binary(Id),
+  <<"6:::", IdBin/binary>>;
+ack(Id) when is_binary(Id) ->
+  <<"6:::", Id/binary>>.
 
 error(EndPoint, Reason) ->
     [<<"7::">>, EndPoint, $:, Reason].
@@ -136,7 +146,14 @@ decode_packet(<<"4:", Rest/binary>>) ->
 decode_packet(<<"5:", Rest/binary>>) ->
   {Id, R1} = id(Rest),
   {EndPoint, Data} = endpoint(R1),
-  [{<<"name">>, EventName},{<<"args">>, [EventArgs]}] = jsx:decode(Data),
+  DataList = jsx:decode(Data),
+  EventName = proplists:get_value(<<"name">>, DataList),
+  [EventArgs] = case proplists:get_value(<<"args">>, DataList) of
+                  undefined ->
+                    [undefined];
+                  EventArgsList ->
+                    EventArgsList
+                end,
   {event, Id, EndPoint, EventName, EventArgs};
 decode_packet(<<"6:::", Rest/binary>>) ->
   Id = binary_to_integer(Rest),
