@@ -11,10 +11,10 @@ start() ->
     ok = application:start(public_key),
     ok = application:start(ssl),
     ok = application:start(ranch),
-    ok = application:start(cowboy),
     ok = application:start(syntax_tools),
     ok = application:start(compiler),
-    ok = application:start(goldrush),
+    ok = application:start(cowlib),
+    ok = application:start(cowboy),
     ok = application:start(socketio),
 
     Dispatch = cowboy_router:compile([
@@ -23,14 +23,7 @@ start() ->
                                                                                                                    {heartbeat_timeout, 30000},
                                                                                                                    {session_timeout, 30000},
                                                                                                                    {callback, ?MODULE},
-                                                                                                                   {protocol, socketio_data_protocol}])]},
-                                             {"/[...]", cowboy_static, [
-                                                                        {directory, <<"./priv">>},
-                                                                        {mimetypes, [
-                                                                                     {<<".html">>, [<<"text/html">>]},
-                                                                                     {<<".css">>, [<<"text/css">>]},
-                                                                                     {<<".js">>, [<<"application/javascript">>]}]}
-                                                                       ]}
+                                                                                                                   {protocol, socketio_data_protocol}])]}
                                             ]}
                                      ]),
 
