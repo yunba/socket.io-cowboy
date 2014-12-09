@@ -19,7 +19,7 @@
 -include("socketio_internal.hrl").
 
 %% API
--export([start_link/4, init/0, configure/1, create/4, find/1, pull/2, pull_no_wait/2, poll/1, send/2, recv/2,
+-export([start_link/5, init/0, configure/1, create/5, find/1, pull/2, pull_no_wait/2, poll/1, send/2, recv/2,
          send_message/2, send_obj/2, emit/3, refresh/1, disconnect/1, unsub_caller/2]).
 
 %% gen_server callbacks
@@ -29,14 +29,15 @@
 -define(ETS, socketio_session_table).
 
 -record(state, {id,
-                callback,
-                messages,
-                session_timeout,
-                session_timeout_tref,
-                caller,
-                registered,
-                opts,
-                session_state}).
+    callback,
+    messages,
+    session_timeout,
+    session_timeout_tref,
+    caller,
+    registered,
+    opts,
+    session_state,
+    peer_address}).
 
 %%%===================================================================
 %%% API
@@ -54,8 +55,8 @@ init() ->
     _ = ets:new(?ETS, [public, named_table]),
     ok.
 
-create(SessionId, SessionTimeout, Callback, Opts) ->
-    {ok, Pid} = socketio_session_sup:start_child(SessionId, SessionTimeout, Callback, Opts),
+create(SessionId, SessionTimeout, Callback, Opts, PeerAddress) ->
+    {ok, Pid} = socketio_session_sup:start_child(SessionId, SessionTimeout, Callback, Opts, PeerAddress),
     Pid.
 
 find(SessionId) ->
@@ -99,15 +100,15 @@ disconnect(Pid) ->
 unsub_caller(Pid, Caller) ->
     gen_server:call(Pid, {unsub_caller, Caller}).
 %%--------------------------------------------------------------------
-start_link(SessionId, SessionTimeout, Callback, Opts) ->
-    gen_server:start_link(?MODULE, [SessionId, SessionTimeout, Callback, Opts], []).
+start_link(SessionId, SessionTimeout, Callback, Opts, PeerAddress) ->
+    gen_server:start_link(?MODULE, [SessionId, SessionTimeout, Callback, Opts, PeerAddress], []).
 
 %%%===================================================================
 %%% gen_server callbacks
 %%%===================================================================
 
 %%--------------------------------------------------------------------
-init([SessionId, SessionTimeout, Callback, Opts]) ->
+init([SessionId, SessionTimeout, Callback, Opts, PeerAddress]) ->
     self() ! register_in_ets,
     TRef = erlang:send_after(SessionTimeout, self(), session_timeout),
     {ok, #state{id = SessionId,
@@ -116,7 +117,7 @@ init([SessionId, SessionTimeout, Callback, Opts]) ->
                 callback = Callback,
                 opts = Opts,
                 session_timeout_tref = TRef,
-                session_timeout = SessionTimeout}}.
+                session_timeout = SessionTimeout, peer_address = PeerAddress}}.
 
 %%--------------------------------------------------------------------
 handle_call({pull, Pid, Wait}, _From,  State = #state{messages = Messages, caller = undefined}) ->
@@ -181,10 +182,11 @@ handle_cast(_Msg, State) ->
 handle_info(session_timeout, State) ->
     {stop, normal, State};
 
-handle_info(register_in_ets, State = #state{id = SessionId, registered = false, callback = Callback, opts = Opts}) ->
+handle_info(register_in_ets,
+    State = #state{id = SessionId, registered = false, callback = Callback, opts = Opts, peer_address = PeerAddress}) ->
     case ets:insert_new(?ETS, {SessionId, self()}) of
         true ->
-            case Callback:open(self(), SessionId, Opts) of
+            case Callback:open(self(), SessionId, Opts, PeerAddress) of
                 {ok, SessionState} ->
                     send(self(), {connect, <<>>}),
                     {noreply, State#state{registered = true, session_state = SessionState}};

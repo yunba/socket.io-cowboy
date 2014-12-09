@@ -53,8 +53,9 @@ handle(Req, HttpState = #http_state{action = create_session, version = Version, 
                                                                               opts = Opts,
                                                                               callback = Callback}}) ->
     Sid = uuids:new(),
+    PeerAddress = cowboy_req:peer(Req),
 
-    _Pid = socketio_session:create(Sid, SessionTimeout, Callback, Opts),
+    _Pid = socketio_session:create(Sid, SessionTimeout, Callback, Opts, PeerAddress),
 
     case Version of
         0 ->
