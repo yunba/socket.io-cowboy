@@ -26,7 +26,9 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
--define(ETS, socketio_session_table).
+-define(SESSION_PID_TABLE, socketio_session_to_pid).
+
+-record(?SESSION_PID_TABLE, {sid, pid}).
 
 -record(state, {id,
     callback,
@@ -52,19 +54,28 @@ configure(Opts) ->
            }.
 
 init() ->
-    _ = ets:new(?ETS, [public, named_table]),
-    ok.
+    resource_discovery:add_local_resource_tuple({?SESSION_PID_TABLE, node()}),
+    resource_discovery:add_target_resource_type(?SESSION_PID_TABLE),
+    ok = resource_discovery:sync_resources(2500),
+
+    Nodes = resource_discovery:get_resources(?SESSION_PID_TABLE),
+    start_mnesia(lists:delete(node(), Nodes)).
 
 create(SessionId, SessionTimeout, Callback, Opts, PeerAddress) ->
     {ok, Pid} = socketio_session_sup:start_child(SessionId, SessionTimeout, Callback, Opts, PeerAddress),
     Pid.
 
 find(SessionId) ->
-    case ets:lookup(?ETS, SessionId) of
+    case mnesia:dirty_read(?SESSION_PID_TABLE, SessionId) of
+        [{?SESSION_PID_TABLE, _, Pid}] ->
+            case is_pid_alive(Pid) of
+                true -> {ok, Pid};
+                _ ->
+                    mnesia:dirty_delete(?SESSION_PID_TABLE, SessionId),
+                    {error, not_found}
+            end;
         [] ->
-            {error, not_found};
-        [{_, Pid}] ->
-            {ok, Pid}
+            {error, not_found}
     end.
 
 pull(Pid, Caller) ->
@@ -184,8 +195,8 @@ handle_info(session_timeout, State) ->
 
 handle_info(register_in_ets,
     State = #state{id = SessionId, registered = false, callback = Callback, opts = Opts, peer_address = PeerAddress}) ->
-    case ets:insert_new(?ETS, {SessionId, self()}) of
-        true ->
+    case mnesia:dirty_write(#?SESSION_PID_TABLE{sid = SessionId, pid = self()}) of
+        ok ->
             case Callback:open(self(), SessionId, Opts, PeerAddress) of
                 {ok, SessionState} ->
                     send(self(), {connect, <<>>}),
@@ -193,7 +204,7 @@ handle_info(register_in_ets,
                 disconnect ->
                     {stop, normal, State}
             end;
-        false ->
+        _ ->
             {stop, session_id_exists, State}
     end;
 
@@ -209,7 +220,7 @@ handle_info(_Info, State) ->
     {noreply, State}.
 %%--------------------------------------------------------------------
 terminate(_Reason, _State = #state{id = SessionId, registered = Registered, callback = Callback, session_state = SessionState}) ->
-    ets:delete(?ETS, SessionId),
+    mnesia:dirty_delete(?SESSION_PID_TABLE, SessionId),
     case Registered of
         true ->
             Callback:close(self(), SessionId, SessionState),
@@ -276,4 +287,32 @@ process_event(EndPoint, EventName, EventArgs, RestEvent, State = #state{id = Ses
             process_messages(RestEvent, State#state{session_state = NewSessionState});
         {disconnect, NewSessionState} ->
             {stop, normal, ok, State#state{session_state = NewSessionState}}
+    end.
+
+is_pid_alive(Pid) when node(Pid) =:= node() ->
+    is_process_alive(Pid);
+is_pid_alive(Pid) ->
+    lists:member(node(Pid), nodes()) andalso
+        (rpc:call(node(Pid), erlang, is_process_alive, [Pid]) =:= true).
+
+start_mnesia([]) ->
+    mnesia:create_table(?SESSION_PID_TABLE,
+        [{index, [pid]}, {attributes, record_info(fields, ?SESSION_PID_TABLE)}]),
+    error_logger:info_msg("mnesia: create table ~p ", [?SESSION_PID_TABLE]),
+    ok;
+start_mnesia(Nodes) ->
+    share_nodes(Nodes).
+
+share_nodes([]) ->
+    error_logger:error("all nodes unavailable!"),
+    error;
+share_nodes([Node|T]) ->
+    case mnesia:change_config(extra_db_nodes, [Node]) of
+        {ok, [Node]} ->
+            mnesia:add_table_copy(schema, node(), ram_copies),
+            mnesia:add_table_copy(?SESSION_PID_TABLE, node(), ram_copies),
+            mnesia:wait_for_tables(mnesia:system_info(tables), infinity),
+            ok;
+        _ ->
+            share_nodes(T)
     end.

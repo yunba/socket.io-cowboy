@@ -15,7 +15,7 @@
 -module(socketio).
 -author('Kirill Trofimov <sinnus@gmail.com>').
 -behaviour(application).
--export([start/0, start/2, stop/1]).
+-export([start/0, start/2, stop/1, stop/0]).
 
 start() ->
     ok = application:start(crypto),
@@ -23,12 +23,29 @@ start() ->
     ok = application:start(public_key),
     ok = application:start(ssl),
     ok = application:start(ranch),
+    ok = application:start(cowlib),
     ok = application:start(cowboy),
-    ok = application:start(socketio).
+
+    ok = mnesia:start(),
+    ok = resource_discovery:start(),
+
+    application:start(socketio).
 
 start(_Type, _Args) ->
-    socketio_session:init(),
+    ok = socketio_session:init(),
     socketio_sup:start_link().
 
 stop(_State) ->
     ok.
+
+stop() ->
+    resource_discovery:stop(),
+    mnesia:stop(),
+
+    application:stop(cowboy),
+    application:stop(cowlib),
+    application:stop(ranch),
+    application:stop(ssl),
+    application:stop(public_key),
+    application:stop(asn1),
+    application:stop(crypto).

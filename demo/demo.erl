@@ -1,21 +1,13 @@
 -module(demo).
 
--export([start/0, open/3, recv/4, handle_info/4, close/3]).
+-export([start/0, open/4, recv/4, handle_info/4, close/3]).
 
 -record(session_state, {}).
 
 start() ->
-    ok = application:start(sasl),
-    ok = application:start(crypto),
-    ok = application:start(asn1),
-    ok = application:start(public_key),
-    ok = application:start(ssl),
-    ok = application:start(ranch),
-    ok = application:start(syntax_tools),
-    ok = application:start(compiler),
-    ok = application:start(cowlib),
-    ok = application:start(cowboy),
-    ok = application:start(socketio),
+    net_adm:ping('t1@zy-Compaq-14-Notebook-PC'),
+    timer:sleep(2500),
+    ok = socketio:start(),
 
     Dispatch = cowboy_router:compile([
                                       {'_', [
@@ -33,7 +25,7 @@ start() ->
                                                     {port, 8181}], [{env, [{dispatch, Dispatch}]}]).
 
 %% ---- Handlers
-open(Pid, Sid, _Opts) ->
+open(Pid, Sid, _Opts, _PeerAddress) ->
     erlang:send_after(5000, self(), tick),
     error_logger:info_msg("open ~p ~p~n", [Pid, Sid]),
     demo_mgr:add_session(Pid),

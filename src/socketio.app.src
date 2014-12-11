@@ -7,9 +7,14 @@
 		kernel,
 		stdlib,
 		crypto,
+		asn1,
 		public_key,
 		ssl,
-		cowboy
+		ranch,
+		cowlib,
+		cowboy,
+		mnesia,
+		resource_discovery
 	]},
 	{mod, {socketio, []}},
 	{env, []}
