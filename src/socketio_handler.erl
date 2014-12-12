@@ -23,27 +23,28 @@
 -record(http_state, {action, config, sid, heartbeat_tref, messages, pid, version}).
 
 init({_, http}, Req, [Config]) ->
-    {PathInfo, _} = cowboy_req:path_info(Req),
+    Req2 = enable_cors(Req),
+    {PathInfo, _} = cowboy_req:path_info(Req2),
     case PathInfo of
         [<<"1">>] ->
-            {ok, Req, #http_state{action = create_session, config = Config, version = 0}};
+            {ok, Req2, #http_state{action = create_session, config = Config, version = 0}};
         [<<"1">>, <<"xhr-polling">>, Sid] ->
-            handle_polling(Req, Sid, Config, 0);
+            handle_polling(Req2, Sid, Config, 0);
         [<<"1">>, <<"websocket">>, _Sid] ->
             {upgrade, protocol, cowboy_websocket};
         _ ->
-            {Sid, _} = cowboy_req:qs_val(<<"sid">>, Req),
-            {Transport, _} = cowboy_req:qs_val(<<"transport">>, Req),
+            {Sid, _} = cowboy_req:qs_val(<<"sid">>, Req2),
+            {Transport, _} = cowboy_req:qs_val(<<"transport">>, Req2),
 
             case {Transport, Sid} of
                 {<<"polling">>, undefined} ->
-                    {ok, Req, #http_state{action = create_session, config = Config, version = 1}};
+                    {ok, Req2, #http_state{action = create_session, config = Config, version = 1}};
                 {<<"polling">>, _} when is_binary(Sid) ->
-                    handle_polling(Req, Sid, Config, 1);
+                    handle_polling(Req2, Sid, Config, 1);
                 {<<"websocket">>, _} ->
                     {upgrade, protocol, cowboy_websocket};
                 _ ->
-                    {ok, Req, #http_state{config = Config}}
+                    {ok, Req2, #http_state{config = Config}}
             end
     end.
 
@@ -130,21 +131,13 @@ terminate(_Reason, _Req, _HttpState = #http_state{heartbeat_tref = HeartbeatTRef
     end.
 
 text_headers() ->
-    [{<<"content-Type">>, <<"text/plain; charset=utf-8">>},
-     {<<"Cache-Control">>, <<"no-cache">>},
-     {<<"Expires">>, <<"Sat, 25 Dec 1999 00:00:00 GMT">>},
-     {<<"Pragma">>, <<"no-cache">>},
-     {<<"Access-Control-Allow-Credentials">>, <<"true">>},
-     {<<"Access-Control-Allow-Origin">>, <<"http://localhost">>}].
+    [
+        {<<"content-Type">>, <<"text/plain; charset=utf-8">>}
+    ].
 
 stream_headers() ->
     [
-        {<<"content-Type">>, <<"application/octet-stream">>},
-        {<<"Cache-Control">>, <<"no-cache">>},
-        {<<"Expires">>, <<"Sat, 25 Dec 1999 00:00:00 GMT">>},
-        {<<"Pragma">>, <<"no-cache">>},
-        {<<"Access-Control-Allow-Credentials">>, <<"true">>},
-        {<<"Access-Control-Allow-Origin">>, <<"http://localhost">>}
+        {<<"content-Type">>, <<"application/octet-stream">>}
     ].
 
 reply_messages(Req, Messages, _Config = #config{protocol = Protocol}, SendNop) ->
@@ -284,4 +277,13 @@ reply_ws_messages(Req, Messages, State = {_Config = #config{protocol = Protocol}
             {ok, Req, State};
         Packet ->
             {reply, {text, Packet}, Req, State}
+    end.
+
+enable_cors(Req) ->
+    case cowboy_req:header(<<"origin">>, Req) of
+        {undefined, _} ->
+            Req;
+        {Origin, _} ->
+            Req1 = cowboy_req:set_resp_header(<<"access-control-allow-origin">>, Origin, Req),
+            cowboy_req:set_resp_header(<<"access-control-allow-credentials">>, <<"true">>, Req1)
     end.
