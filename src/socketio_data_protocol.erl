@@ -57,21 +57,31 @@ message(Id, EndPoint, Msg) when is_binary(Id) ->
 
 json(Id, EndPoint, Msg) when is_integer(Id) ->
     IdBin = binary:list_to_bin(integer_to_list(Id)),
-    JsonBin = jsx:encode(Msg),
+    case is_list(Msg) of
+      true ->
+        JsonBin = jiffy:encode({Msg});
+      _ ->
+        JsonBin = jiffy:encode(Msg)
+    end,
     <<"4:", IdBin/binary, ":", EndPoint/binary, ":", JsonBin/binary>>;
 json(Id, EndPoint, Msg) when is_binary(Id) ->
-    JsonBin = jsx:encode(Msg),
+    case is_list(Msg) of
+      true ->
+        JsonBin = jiffy:encode({Msg});
+      _ ->
+        JsonBin = jiffy:encode(Msg)
+    end,
     <<"4:", Id/binary, ":", EndPoint/binary, ":", JsonBin/binary>>.
 
 event(Id, EndPoint, EventName, EventArgs) when is_list(EventArgs) ->
   IdBin = make_sure_binary(Id),
   EventNameBin = make_sure_binary(EventName),
-  EventBin = jsx:encode([{<<"name">>, EventNameBin},{<<"args">>, [EventArgs]}]),
+  EventBin = jiffy:encode({[{<<"name">>, EventNameBin},{<<"args">>, [EventArgs]}]}),
   <<"5:", IdBin/binary, ":", EndPoint/binary, ":", EventBin/binary>>;
 event(Id, EndPoint, EventName, undefined) ->
   IdBin = make_sure_binary(Id),
   EventNameBin = make_sure_binary(EventName),
-  EventBin = jsx:encode([{<<"name">>, EventNameBin}]),
+  EventBin = jiffy:encode({[{<<"name">>, EventNameBin}]}),
   <<"5:", IdBin/binary, ":", EndPoint/binary, ":", EventBin/binary>>;
 event(Id, EndPoint, EventName, EventArgs) ->
   event(Id, EndPoint, EventName, [EventArgs]).
@@ -142,11 +152,18 @@ decode_packet(<<"3:", Rest/binary>>) ->
 decode_packet(<<"4:", Rest/binary>>) ->
     {Id, R1} = id(Rest),
     {EndPoint, Data} = endpoint(R1),
-    {json, Id, EndPoint, jsx:decode(Data)};
+    Result = jiffy:decode(Data),
+    case is_tuple(Result) of
+      true ->
+        {Result2} = Result,
+        {json, Id, EndPoint, Result2};
+      _ ->
+        {json, Id, EndPoint, Result}
+    end;
 decode_packet(<<"5:", Rest/binary>>) ->
   {Id, R1} = id(Rest),
   {EndPoint, Data} = endpoint(R1),
-  DataList = jsx:decode(Data),
+  {DataList} = jiffy:decode(Data),
   EventName = proplists:get_value(<<"name">>, DataList),
   [EventArgs] = case proplists:get_value(<<"args">>, DataList) of
                   undefined ->

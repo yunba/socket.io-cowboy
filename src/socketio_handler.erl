@@ -71,7 +71,7 @@ handle(Req, HttpState = #http_state{action = create_session, version = Version, 
             HeartbeatTimeoutBin = list_to_binary(integer_to_list(HeartbeatTimeout)),
             SessionTimeoutBin = list_to_binary(integer_to_list(SessionTimeout)),
 
-            Result = jsx:encode([{<<"sid">>, Sid}, {<<"pingInterval">>, HeartbeatTimeoutBin}, {<<"pingTimeout">>, SessionTimeoutBin}, {<<"upgrades">>, [<<"websocket">>]}]),
+            Result = jiffy:encode({[{<<"sid">>, Sid}, {<<"pingInterval">>, HeartbeatTimeoutBin}, {<<"pingTimeout">>, SessionTimeoutBin}, {<<"upgrades">>, [<<"websocket">>]}]}),
             ResultLen = [ list_to_integer([D]) || D <- integer_to_list(byte_size(Result) + 1) ],
             ResultLenBin = list_to_binary(ResultLen),
             Result2 = <<0, ResultLenBin/binary, 255, "0", Result/binary>>,
