@@ -76,7 +76,7 @@ json(Id, EndPoint, Msg) when is_binary(Id) ->
 event(Id, EndPoint, EventName, EventArgs) when is_list(EventArgs) ->
   IdBin = make_sure_binary(Id),
   EventNameBin = make_sure_binary(EventName),
-  EventBin = jiffy:encode({[{<<"name">>, EventNameBin},{<<"args">>, [EventArgs]}]}),
+  EventBin = jiffy:encode({[{<<"name">>, EventNameBin},{<<"args">>, {EventArgs}}]}),
   <<"5:", IdBin/binary, ":", EndPoint/binary, ":", EventBin/binary>>;
 event(Id, EndPoint, EventName, undefined) ->
   IdBin = make_sure_binary(Id),
@@ -165,9 +165,9 @@ decode_packet(<<"5:", Rest/binary>>) ->
   {EndPoint, Data} = endpoint(R1),
   {DataList} = jiffy:decode(Data),
   EventName = proplists:get_value(<<"name">>, DataList),
-  [EventArgs] = case proplists:get_value(<<"args">>, DataList) of
+  [{EventArgs}] = case proplists:get_value(<<"args">>, DataList) of
                   undefined ->
-                    [undefined];
+                    [{undefined}];
                   EventArgsList ->
                     EventArgsList
                 end,
