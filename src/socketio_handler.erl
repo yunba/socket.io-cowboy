@@ -219,9 +219,9 @@ websocket_init(_TransportName, Req, [Config]) ->
                     erlang:monitor(process, Pid),
                     self() ! go,
                     erlang:start_timer(Config#config.heartbeat, self(), {?MODULE, Pid}),
-                    {ok, Req, {Config, Pid}};
+                    {ok, Req, {Config, Pid, []}};
                 {error, not_found} ->
-                    {shutdown, {Config, undefined}}
+                    {shutdown, {Config, undefined, []}}
             end;
         _ ->
             case cowboy_req:qs_val(<<"sid">>, Req) of
@@ -230,54 +230,58 @@ websocket_init(_TransportName, Req, [Config]) ->
                         {ok, Pid} ->
                             erlang:monitor(process, Pid),
                             self() ! go,
-                            {ok, Req, {Config, Pid}};
+                            {ok, Req, {Config, Pid, []}};
                         {error, not_found} ->
-                            {shutdown, {Config, undefined}}
+                            {shutdown, {Config, undefined, []}}
                     end;
                 _ ->
-                    {shutdown, {Config, undefined}}
+                    {shutdown, {Config, undefined, []}}
             end
     end.
 
-websocket_handle({text, Data}, Req, {Config = #config{protocol = Protocol}, Pid}) ->
+websocket_handle({text, Data}, Req, {Config = #config{protocol = Protocol}, Pid, RestMessages}) ->
     Messages = Protocol:decode(Data),
     socketio_session:recv(Pid, Messages),
-    {ok, Req, {Config, Pid}};
+    {ok, Req, {Config, Pid, RestMessages}};
 websocket_handle(_Data, Req, State) ->
     {ok, Req, State}.
 
-websocket_info(go, Req, {Config, Pid}) ->
+websocket_info(go, Req, {Config, Pid, RestMessages}) ->
     case socketio_session:pull(Pid, self()) of
         session_in_use ->
-            {ok, Req, {Config, Pid}};
+            {ok, Req, {Config, Pid, RestMessages}};
         Messages ->
-            reply_ws_messages(Req, Messages, {Config, Pid})
+            RestMessages2 = lists:append([RestMessages, Messages]),
+            self() ! go_rest,
+            {ok, Req, {Config, Pid, RestMessages2}}
     end;
-websocket_info({message_arrived, Pid}, Req, {Config, Pid}) ->
+websocket_info(go_rest, Req, {Config = #config{protocol = Protocol}, Pid, RestMessages}) ->
+    case RestMessages of
+        [] ->
+            {ok, Req, {Config, Pid, []}};
+        [Message | Rest] ->
+            self() ! go_rest,
+            Packet = Protocol:encode(Message),
+            {reply, {text, Packet}, Req, {Config, Pid, Rest}}
+    end;
+websocket_info({message_arrived, Pid}, Req, {Config, Pid, RestMessages}) ->
     Messages =  socketio_session:poll(Pid),
+    RestMessages2 = lists:append([RestMessages, Messages]),
     self() ! go,
-    reply_ws_messages(Req, Messages, {Config, Pid});
-websocket_info({timeout, _TRef, {?MODULE, Pid}}, Req, {Config = #config{protocol = Protocol}, Pid}) ->
+    {ok, Req, {Config, Pid, RestMessages2}};
+websocket_info({timeout, _TRef, {?MODULE, Pid}}, Req, {Config = #config{protocol = Protocol}, Pid, RestMessages}) ->
     socketio_session:refresh(Pid),
     erlang:start_timer(Config#config.heartbeat, self(), {?MODULE, Pid}),
     Packet = Protocol:encode(heartbeat),
-    {reply, {text, Packet}, Req, {Config, Pid}};
-websocket_info({'DOWN', _Ref, process, Pid, _Reason}, Req, State = {_Config, Pid}) ->
+    {reply, {text, Packet}, Req, {Config, Pid, RestMessages}};
+websocket_info({'DOWN', _Ref, process, Pid, _Reason}, Req, State = {_Config, Pid, _RestMessages}) ->
     {shutdown, Req, State};
 websocket_info(_Info, Req, State) ->
     {ok, Req, State}.
 
-websocket_terminate(_Reason, _Req, _State = {_Config, Pid}) ->
+websocket_terminate(_Reason, _Req, _State = {_Config, Pid, _RestMessages}) ->
     socketio_session:disconnect(Pid),
     ok.
-
-reply_ws_messages(Req, Messages, State = {_Config = #config{protocol = Protocol}, _Pid}) ->
-    case Protocol:encode(Messages) of
-        <<>> ->
-            {ok, Req, State};
-        Packet ->
-            {reply, {text, Packet}, Req, State}
-    end.
 
 enable_cors(Req) ->
     case cowboy_req:header(<<"origin">>, Req) of

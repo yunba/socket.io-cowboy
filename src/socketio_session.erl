@@ -197,9 +197,9 @@ handle_info(register_in_ets,
     State = #state{id = SessionId, registered = false, callback = Callback, opts = Opts, peer_address = PeerAddress}) ->
     case mnesia:dirty_write(#?SESSION_PID_TABLE{sid = SessionId, pid = self()}) of
         ok ->
+            send(self(), {connect, <<>>}),
             case Callback:open(self(), SessionId, Opts, PeerAddress) of
                 {ok, SessionState} ->
-                    send(self(), {connect, <<>>}),
                     {noreply, State#state{registered = true, session_state = SessionState}};
                 disconnect ->
                     {stop, normal, State}
