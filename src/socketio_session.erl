@@ -296,10 +296,16 @@ is_pid_alive(Pid) ->
         (rpc:call(node(Pid), erlang, is_process_alive, [Pid]) =:= true).
 
 start_mnesia([]) ->
-    mnesia:create_table(?SESSION_PID_TABLE,
-        [{index, [pid]}, {attributes, record_info(fields, ?SESSION_PID_TABLE)}]),
-    error_logger:info_msg("mnesia: create table ~p ", [?SESSION_PID_TABLE]),
-    ok;
+    case mnesia:create_table(?SESSION_PID_TABLE,
+        [{index, [pid]}, {attributes, record_info(fields, ?SESSION_PID_TABLE)}]) of
+        {atomic, ok} ->
+            error_logger:info_msg("mnesia: create table ~p ", [?SESSION_PID_TABLE]),
+            ok;
+        {aborted, Reason} ->
+            error_logger:error("mnesia: create table ~p fail: ~p",
+                [?SESSION_PID_TABLE, Reason]),
+            error
+    end;
 start_mnesia(Nodes) ->
     share_nodes(Nodes).
 
