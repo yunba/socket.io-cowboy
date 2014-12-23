@@ -170,6 +170,8 @@ decode_packet(<<"5:", Rest/binary>>) ->
                     [{undefined}];
                   [] ->
                     [{undefined}];
+                  {EventArgsList} ->
+                    [{EventArgsList}];
                   EventArgsList ->
                     EventArgsList
                 end,
