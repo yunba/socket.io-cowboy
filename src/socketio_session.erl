@@ -296,15 +296,20 @@ is_pid_alive(Pid) ->
         (rpc:call(node(Pid), erlang, is_process_alive, [Pid]) =:= true).
 
 start_mnesia([]) ->
-    case mnesia:create_table(?SESSION_PID_TABLE,
-        [{index, [pid]}, {attributes, record_info(fields, ?SESSION_PID_TABLE)}]) of
-        {atomic, ok} ->
-            error_logger:info_msg("mnesia: create table ~p ", [?SESSION_PID_TABLE]),
+    case table_exists(?SESSION_PID_TABLE) of
+        true ->
             ok;
-        {aborted, Reason} ->
-            error_logger:error("mnesia: create table ~p fail: ~p",
-                [?SESSION_PID_TABLE, Reason]),
-            error
+        _ ->
+            case mnesia:create_table(?SESSION_PID_TABLE,
+                [{index, [pid]}, {attributes, record_info(fields, ?SESSION_PID_TABLE)}]) of
+                {atomic, ok} ->
+                    error_logger:info_msg("mnesia: create table ~p ", [?SESSION_PID_TABLE]),
+                    ok;
+                {aborted, Reason} ->
+                    error_logger:error("mnesia: create table ~p fail: ~p",
+                        [?SESSION_PID_TABLE, Reason]),
+                    error
+            end
     end;
 start_mnesia(Nodes) ->
     share_nodes(Nodes).
@@ -315,10 +320,13 @@ share_nodes([]) ->
 share_nodes([Node|T]) ->
     case mnesia:change_config(extra_db_nodes, [Node]) of
         {ok, [Node]} ->
-            mnesia:add_table_copy(schema, node(), ram_copies),
             mnesia:add_table_copy(?SESSION_PID_TABLE, node(), ram_copies),
             mnesia:wait_for_tables(mnesia:system_info(tables), infinity),
             ok;
         _ ->
             share_nodes(T)
     end.
+
+table_exists(TableName) ->
+  Tables = mnesia:system_info(tables),
+  lists:member(TableName,Tables).
