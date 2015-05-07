@@ -169,7 +169,7 @@ safe_poll(Req, HttpState = #http_state{config = Config = #config{protocol = Prot
         Messages = socketio_session:poll(Pid),
         case {WaitIfEmpty, Messages} of
             {true, []} ->
-                {loop, Req, HttpState};
+                {loop, Req, HttpState, hibernate};
             _ ->
                 {ok, Req1} = reply_messages(Req, Messages, Config, true),
                 {ok, Req1, HttpState}
@@ -189,7 +189,7 @@ handle_polling(Req, Sid, Config, Version) ->
                     {ok, Req, #http_state{action = session_in_use, config = Config, sid = Sid, version = Version}};
                 [] ->
                     TRef = erlang:start_timer(Config#config.heartbeat, self(), {?MODULE, Pid}),
-                    {loop, Req, #http_state{action = heartbeat, config = Config, sid = Sid, heartbeat_tref = TRef, pid = Pid, version = Version}, infinity};
+                    {loop, Req, #http_state{action = heartbeat, config = Config, sid = Sid, heartbeat_tref = TRef, pid = Pid, version = Version}, hibernate};
                 Messages ->
                     {ok, Req, #http_state{action = data, messages = Messages, config = Config, sid = Sid, pid = Pid, version = Version}}
             end;
@@ -219,7 +219,7 @@ websocket_init(_TransportName, Req, [Config]) ->
                     erlang:monitor(process, Pid),
                     self() ! go,
                     erlang:start_timer(Config#config.heartbeat, self(), {?MODULE, Pid}),
-                    {ok, Req, {Config, Pid, []}};
+                    {ok, Req, {Config, Pid, []}, hibernate};
                 {error, not_found} ->
                     {shutdown, {Config, undefined, []}}
             end;
@@ -230,7 +230,7 @@ websocket_init(_TransportName, Req, [Config]) ->
                         {ok, Pid} ->
                             erlang:monitor(process, Pid),
                             self() ! go,
-                            {ok, Req, {Config, Pid, []}};
+                            {ok, Req, {Config, Pid, []}, hibernate};
                         {error, not_found} ->
                             {shutdown, {Config, undefined, []}}
                     end;
@@ -242,42 +242,42 @@ websocket_init(_TransportName, Req, [Config]) ->
 websocket_handle({text, Data}, Req, {Config = #config{protocol = Protocol}, Pid, RestMessages}) ->
     Messages = Protocol:decode(Data),
     socketio_session:recv(Pid, Messages),
-    {ok, Req, {Config, Pid, RestMessages}};
+    {ok, Req, {Config, Pid, RestMessages}, hibernate};
 websocket_handle(_Data, Req, State) ->
-    {ok, Req, State}.
+    {ok, Req, State, hibernate}.
 
 websocket_info(go, Req, {Config, Pid, RestMessages}) ->
     case socketio_session:pull(Pid, self()) of
         session_in_use ->
-            {ok, Req, {Config, Pid, RestMessages}};
+            {ok, Req, {Config, Pid, RestMessages}, hibernate};
         Messages ->
             RestMessages2 = lists:append([RestMessages, Messages]),
             self() ! go_rest,
-            {ok, Req, {Config, Pid, RestMessages2}}
+            {ok, Req, {Config, Pid, RestMessages2}, hibernate}
     end;
 websocket_info(go_rest, Req, {Config = #config{protocol = Protocol}, Pid, RestMessages}) ->
     case RestMessages of
         [] ->
-            {ok, Req, {Config, Pid, []}};
+            {ok, Req, {Config, Pid, []}, hibernate};
         [Message | Rest] ->
             self() ! go_rest,
             Packet = Protocol:encode(Message),
-            {reply, {text, Packet}, Req, {Config, Pid, Rest}}
+            {reply, {text, Packet}, Req, {Config, Pid, Rest}, hibernate}
     end;
 websocket_info({message_arrived, Pid}, Req, {Config, Pid, RestMessages}) ->
     Messages =  socketio_session:poll(Pid),
     RestMessages2 = lists:append([RestMessages, Messages]),
     self() ! go,
-    {ok, Req, {Config, Pid, RestMessages2}};
+    {ok, Req, {Config, Pid, RestMessages2}, hibernate};
 websocket_info({timeout, _TRef, {?MODULE, Pid}}, Req, {Config = #config{protocol = Protocol}, Pid, RestMessages}) ->
     socketio_session:refresh(Pid),
     erlang:start_timer(Config#config.heartbeat, self(), {?MODULE, Pid}),
     Packet = Protocol:encode(heartbeat),
-    {reply, {text, Packet}, Req, {Config, Pid, RestMessages}};
+    {reply, {text, Packet}, Req, {Config, Pid, RestMessages}, hibernate};
 websocket_info({'DOWN', _Ref, process, Pid, _Reason}, Req, State = {_Config, Pid, _RestMessages}) ->
     {shutdown, Req, State};
 websocket_info(_Info, Req, State) ->
-    {ok, Req, State}.
+    {ok, Req, State, hibernate}.
 
 websocket_terminate(_Reason, _Req, _State = {_Config, Pid, _RestMessages}) ->
     socketio_session:disconnect(Pid),

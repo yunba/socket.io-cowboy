@@ -128,14 +128,14 @@ init([SessionId, SessionTimeout, Callback, Opts, PeerAddress]) ->
                 callback = Callback,
                 opts = Opts,
                 session_timeout_tref = TRef,
-                session_timeout = SessionTimeout, peer_address = PeerAddress}}.
+                session_timeout = SessionTimeout, peer_address = PeerAddress}, hibernate}.
 
 %%--------------------------------------------------------------------
 handle_call({pull, Pid, Wait}, _From,  State = #state{messages = Messages, caller = undefined}) ->
     State1 = refresh_session_timeout(State),
     case Messages of
         [] ->
-            {reply, [], State1#state{caller = Pid}};
+            {reply, [], State1#state{caller = Pid}, hibernate};
         _ ->
             NewCaller = case Wait of
                             true ->
@@ -143,34 +143,34 @@ handle_call({pull, Pid, Wait}, _From,  State = #state{messages = Messages, calle
                             false ->
                                 undefined
                         end,
-            {reply, lists:reverse(Messages), State1#state{messages = [], caller = NewCaller}}
+            {reply, lists:reverse(Messages), State1#state{messages = [], caller = NewCaller}, hibernate}
     end;
 
 handle_call({pull, _Pid, _}, _From,  State) ->
-    {reply, session_in_use, State};
+    {reply, session_in_use, State, hibernate};
 
 handle_call({poll}, _From, State = #state{messages = Messages}) ->
     State1 = refresh_session_timeout(State),
-    {reply, lists:reverse(Messages), State1#state{messages = [], caller = undefined}};
+    {reply, lists:reverse(Messages), State1#state{messages = [], caller = undefined}, hibernate};
 
 handle_call({recv, Messages}, _From, State) ->
     State1 = refresh_session_timeout(State),
     process_messages(Messages, State1);
 
 handle_call({unsub_caller, _Caller}, _From, State = #state{caller = undefined}) ->
-    {reply, ok, State};
+    {reply, ok, State, hibernate};
 
 handle_call({unsub_caller, Caller}, _From, State = #state{caller = PrevCaller}) ->
     case Caller of
         PrevCaller ->
-            {reply, ok, State#state{caller = undefined}};
+            {reply, ok, State#state{caller = undefined}, hibernate};
         _ ->
-            {reply, ok, State}
+            {reply, ok, State, hibernate}
     end;
 
 handle_call(_Request, _From, State) ->
     Reply = ok,
-    {reply, Reply, State}.
+    {reply, Reply, State, hibernate}.
 %%--------------------------------------------------------------------
 handle_cast({send, Message}, State = #state{messages = Messages, caller = Caller}) ->
     case Caller of
@@ -179,16 +179,16 @@ handle_cast({send, Message}, State = #state{messages = Messages, caller = Caller
         _ ->
             Caller ! {message_arrived, self()}
     end,
-    {noreply, State#state{messages = [Message|Messages]}};
+    {noreply, State#state{messages = [Message|Messages]}, hibernate};
 
 handle_cast({refresh}, State) ->
-    {noreply, refresh_session_timeout(State)};
+    {noreply, refresh_session_timeout(State), hibernate};
 
 handle_cast({disconnect}, State) ->
     {stop, normal, State};
 
 handle_cast(_Msg, State) ->
-    {noreply, State}.
+    {noreply, State, hibernate}.
 %%--------------------------------------------------------------------
 handle_info(session_timeout, State) ->
     {stop, normal, State};
@@ -200,7 +200,7 @@ handle_info(register_in_ets,
             send(self(), {connect, <<>>}),
             case Callback:open(self(), SessionId, Opts, PeerAddress) of
                 {ok, SessionState} ->
-                    {noreply, State#state{registered = true, session_state = SessionState}};
+                    {noreply, State#state{registered = true, session_state = SessionState}, hibernate};
                 disconnect ->
                     {stop, normal, State}
             end;
@@ -211,13 +211,13 @@ handle_info(register_in_ets,
 handle_info(Info, State = #state{id = Id, registered = true, callback = Callback, session_state = SessionState}) ->
     case Callback:handle_info(self(), Id, Info, SessionState) of
         {ok, NewSessionState} ->
-            {noreply, State#state{session_state = NewSessionState}};
+            {noreply, State#state{session_state = NewSessionState}, hibernate};
         {disconnect, NewSessionState} ->
             {stop, normal, State#state{session_state = NewSessionState}}
     end;
 
 handle_info(_Info, State) ->
-    {noreply, State}.
+    {noreply, State, hibernate}.
 %%--------------------------------------------------------------------
 terminate(_Reason, _State = #state{id = SessionId, registered = Registered, callback = Callback, session_state = SessionState}) ->
     mnesia:dirty_delete(?SESSION_PID_TABLE, SessionId),
@@ -243,7 +243,7 @@ refresh_session_timeout(State = #state{session_timeout = Timeout, session_timeou
     State#state{session_timeout_tref = NewTRef}.
 
 process_messages([], _State) ->
-    {reply, ok, _State};
+    {reply, ok, _State, hibernate};
 
 process_messages([Message|Rest], State = #state{id = SessionId, callback = Callback, session_state = SessionState}) ->
     case Message of
