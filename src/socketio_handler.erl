@@ -197,7 +197,12 @@ handle_polling(Req, Sid, Config, Version) ->
             Protocol = Config#config.protocol,
             case cowboy_req:body(Req) of
                 {ok, Body, Req1} ->
-                    Messages = Protocol:decode(Body),
+                    Messages = case catch(Protocol:decode(Body)) of
+                                   {'EXIT', _Reason} ->
+                                       [];
+                                   Msgs ->
+                                       Msgs
+                               end,
                     socketio_session:recv(Pid, Messages),
                     {ok, Req1, #http_state{action = ok, config = Config, sid = Sid, version = Version}};
                 {error, _} ->
@@ -240,7 +245,12 @@ websocket_init(_TransportName, Req, [Config]) ->
     end.
 
 websocket_handle({text, Data}, Req, {Config = #config{protocol = Protocol}, Pid, RestMessages}) ->
-    Messages = Protocol:decode(Data),
+    Messages = case catch(Protocol:decode(Data)) of
+                   {'EXIT', _Reason} ->
+                       [];
+                   Msgs ->
+                       Msgs
+               end,
     socketio_session:recv(Pid, Messages),
     {ok, Req, {Config, Pid, RestMessages}, hibernate};
 websocket_handle(_Data, Req, State) ->
