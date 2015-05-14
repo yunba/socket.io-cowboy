@@ -226,7 +226,7 @@ websocket_init(_TransportName, Req, [Config]) ->
                     erlang:start_timer(Config#config.heartbeat, self(), {?MODULE, Pid}),
                     {ok, Req, {Config, Pid, []}, hibernate};
                 {error, not_found} ->
-                    {shutdown, {Config, undefined, []}}
+                    {shutdown, Req}
             end;
         _ ->
             case cowboy_req:qs_val(<<"sid">>, Req) of
@@ -237,10 +237,10 @@ websocket_init(_TransportName, Req, [Config]) ->
                             self() ! go,
                             {ok, Req, {Config, Pid, []}, hibernate};
                         {error, not_found} ->
-                            {shutdown, {Config, undefined, []}}
+                            {shutdown, Req}
                     end;
                 _ ->
-                    {shutdown, {Config, undefined, []}}
+                    {shutdown, Req}
             end
     end.
 
