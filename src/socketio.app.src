@@ -13,8 +13,7 @@
 		ranch,
 		cowlib,
 		cowboy,
-		mnesia,
-		resource_discovery
+		mnesia
 	]},
 	{mod, {socketio, []}},
 	{env, []}

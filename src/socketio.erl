@@ -27,19 +27,16 @@ start() ->
     ok = application:start(cowboy),
 
     ok = mnesia:start(),
-    ok = resource_discovery:start(),
 
     application:start(socketio).
 
 start(_Type, _Args) ->
-    ok = socketio_session:init(),
     socketio_sup:start_link().
 
 stop(_State) ->
     ok.
 
 stop() ->
-    resource_discovery:stop(),
     mnesia:stop(),
 
     application:stop(cowboy),

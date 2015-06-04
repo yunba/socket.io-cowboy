@@ -19,7 +19,7 @@
 -include("socketio_internal.hrl").
 
 %% API
--export([start_link/5, init/0, configure/1, create/5, find/1, pull/2, pull_no_wait/2, poll/1, send/2, recv/2,
+-export([start_link/5, init_mnesia/0, configure/1, create/5, find/1, pull/2, pull_no_wait/2, poll/1, send/2, recv/2,
          send_message/2, send_obj/2, emit/3, refresh/1, disconnect/1, unsub_caller/2]).
 
 %% gen_server callbacks
@@ -53,13 +53,10 @@ configure(Opts) ->
             opts = proplists:get_value(opts, Opts, undefined)
            }.
 
-init() ->
-    resource_discovery:add_local_resource_tuple({?SESSION_PID_TABLE, node()}),
-    resource_discovery:add_target_resource_type(?SESSION_PID_TABLE),
-    ok = resource_discovery:sync_resources(2500),
-
-    Nodes = resource_discovery:get_resources(?SESSION_PID_TABLE),
-    start_mnesia(lists:delete(node(), Nodes)).
+init_mnesia() ->
+    init_table(?SESSION_PID_TABLE,
+        [{index, [pid]}, {attributes, record_info(fields, ?SESSION_PID_TABLE)}],
+        ram_copies).
 
 create(SessionId, SessionTimeout, Callback, Opts, PeerAddress) ->
     {ok, Pid} = socketio_session_sup:start_child(SessionId, SessionTimeout, Callback, Opts, PeerAddress),
@@ -295,38 +292,40 @@ is_pid_alive(Pid) ->
     lists:member(node(Pid), nodes()) andalso
         (rpc:call(node(Pid), erlang, is_process_alive, [Pid]) =:= true).
 
-start_mnesia([]) ->
-    case table_exists(?SESSION_PID_TABLE) of
-        true ->
-            ok;
-        _ ->
-            case mnesia:create_table(?SESSION_PID_TABLE,
-                [{index, [pid]}, {attributes, record_info(fields, ?SESSION_PID_TABLE)}]) of
-                {atomic, ok} ->
-                    error_logger:info_msg("mnesia: create table ~p ", [?SESSION_PID_TABLE]),
-                    ok;
-                {aborted, Reason} ->
-                    error_logger:error("mnesia: create table ~p fail: ~p",
-                        [?SESSION_PID_TABLE, Reason]),
-                    error
-            end
-    end;
-start_mnesia(Nodes) ->
-    share_nodes(Nodes).
-
-share_nodes([]) ->
-    error_logger:error("all nodes unavailable!"),
-    error;
-share_nodes([Node|T]) ->
-    case mnesia:change_config(extra_db_nodes, [Node]) of
-        {ok, [Node]} ->
-            mnesia:add_table_copy(?SESSION_PID_TABLE, node(), ram_copies),
-            mnesia:wait_for_tables(mnesia:system_info(tables), infinity),
-            ok;
-        _ ->
-            share_nodes(T)
+init_table(Table, Opts, Type) ->
+    case create_table(Table, Opts) of
+        exist ->
+            clone_table(Table, Type);
+        Else ->
+            Else
     end.
 
-table_exists(TableName) ->
-  Tables = mnesia:system_info(tables),
-  lists:member(TableName,Tables).
+create_table(Table, Opts) ->
+    Tables = mnesia:system_info(tables),
+    case lists:member(Table, Tables) of
+        false ->
+            case mnesia:create_table(Table, Opts) of
+                {atomic, ok} ->
+                    error_logger:info_msg("mnesia: create table ~p\n", [Table]),
+                    ok;
+                {aborted, Reason} ->
+                    error_logger:error("mnesia: create table ~p fail: ~p\n", [Table, Reason]),
+                    error
+            end;
+        true ->
+            exist
+    end.
+
+clone_table(Table, Type) ->
+    Tables = mnesia:system_info(local_tables),
+    case lists:member(Table, Tables) of
+        false ->
+            case mnesia:add_table_copy(Table, node(), Type) of
+                {atomic, ok} ->
+                    ok;
+                Error ->
+                    Error
+            end;
+        true ->
+            ok
+    end.
