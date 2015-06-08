@@ -97,7 +97,11 @@ emit(Pid, EventName, EventArgs) ->
     gen_server:cast(Pid, {send, {event, <<>>, <<>>, EventName, EventArgs}}).
 
 recv(Pid, Messages) when is_list(Messages) ->
-    gen_server:call(Pid, {recv, Messages}, infinity).
+    try
+        gen_server:call(Pid, {recv, Messages}, infinity)
+    catch
+        exit:{noproc, _} -> noproc
+    end.
 
 refresh(Pid) ->
     gen_server:cast(Pid, {refresh}).

@@ -203,8 +203,12 @@ handle_polling(Req, Sid, Config, Version) ->
                                    Msgs ->
                                        Msgs
                                end,
-                    socketio_session:recv(Pid, Messages),
-                    {ok, Req1, #http_state{action = ok, config = Config, sid = Sid, version = Version}};
+                    case socketio_session:recv(Pid, Messages) of
+                        noproc ->
+                            {shutdown, Req, #http_state{action = error, config = Config, sid = Sid, version = Version}};
+                        _ ->
+                            {ok, Req1, #http_state{action = ok, config = Config, sid = Sid, version = Version}}
+                    end;
                 {error, _} ->
                     {shutdown, Req, #http_state{action = error, config = Config, sid = Sid, version = Version}}
             end;
@@ -251,8 +255,12 @@ websocket_handle({text, Data}, Req, {Config = #config{protocol = Protocol}, Pid,
                    Msgs ->
                        Msgs
                end,
-    socketio_session:recv(Pid, Messages),
-    {ok, Req, {Config, Pid, RestMessages}, hibernate};
+    case socketio_session:recv(Pid, Messages) of
+        noproc ->
+            {shutdown, Req, {Config, Pid, RestMessages}};
+        _ ->
+            {ok, Req, {Config, Pid, RestMessages}, hibernate}
+    end;
 websocket_handle(_Data, Req, State) ->
     {ok, Req, State, hibernate}.
 
