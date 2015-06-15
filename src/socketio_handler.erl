@@ -283,7 +283,12 @@ websocket_info(go_rest, Req, {Config = #config{protocol = Protocol}, Pid, RestMe
             {reply, {text, Packet}, Req, {Config, Pid, Rest}, hibernate}
     end;
 websocket_info({message_arrived, Pid}, Req, {Config, Pid, RestMessages}) ->
-    Messages =  socketio_session:poll(Pid),
+    Messages =  case socketio_session:safe_poll(Pid) of
+                    {error, noproc} ->
+                        [];
+                    Result ->
+                        Result
+                end,
     RestMessages2 = lists:append([RestMessages, Messages]),
     self() ! go,
     {ok, Req, {Config, Pid, RestMessages2}, hibernate};

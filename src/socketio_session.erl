@@ -19,7 +19,7 @@
 -include("socketio_internal.hrl").
 
 %% API
--export([start_link/5, init_mnesia/0, configure/1, create/5, find/1, pull/2, pull_no_wait/2, poll/1, send/2, recv/2,
+-export([start_link/5, init_mnesia/0, configure/1, create/5, find/1, pull/2, pull_no_wait/2, poll/1, safe_poll/1, send/2, recv/2,
          send_message/2, send_obj/2, emit/3, refresh/1, disconnect/1, unsub_caller/2]).
 
 %% gen_server callbacks
@@ -84,6 +84,9 @@ pull_no_wait(Pid, Caller) ->
 poll(Pid) ->
     gen_server:call(Pid, {poll}, infinity).
 
+safe_poll(Pid) ->
+    safe_call(Pid, {poll}, infinity).
+
 send(Pid, Message) ->
     gen_server:cast(Pid, {send, Message}).
 
@@ -97,10 +100,11 @@ emit(Pid, EventName, EventArgs) ->
     gen_server:cast(Pid, {send, {event, <<>>, <<>>, EventName, EventArgs}}).
 
 recv(Pid, Messages) when is_list(Messages) ->
-    try
-        gen_server:call(Pid, {recv, Messages}, infinity)
-    catch
-        exit:{noproc, _} -> noproc
+    case safe_call(Pid, {recv, Messages}, infinity) of
+        {error, noproc} ->
+            noproc;
+        Result ->
+            Result
     end.
 
 refresh(Pid) ->
@@ -332,4 +336,11 @@ clone_table(Table, Type) ->
             end;
         true ->
             ok
+    end.
+
+safe_call(Pid, Msg, Timeout) ->
+    try
+        gen_server:call(Pid, Msg, Timeout)
+    catch
+        exit:{noproc, _} -> {error, noproc}
     end.
