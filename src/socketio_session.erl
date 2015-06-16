@@ -342,5 +342,6 @@ safe_call(Pid, Msg, Timeout) ->
     try
         gen_server:call(Pid, Msg, Timeout)
     catch
-        exit:{noproc, _} -> {error, noproc}
+        exit:{noproc, _} -> {error, noproc};
+        exit:{normal, _} -> {error, noproc}
     end.
