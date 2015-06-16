@@ -76,10 +76,10 @@ find(SessionId) ->
     end.
 
 pull(Pid, Caller) ->
-    gen_server:call(Pid, {pull, Caller, true}, infinity).
+    safe_call(Pid, {pull, Caller, true}, infinity).
 
 pull_no_wait(Pid, Caller) ->
-    gen_server:call(Pid, {pull, Caller, false}, infinity).
+    safe_call(Pid, {pull, Caller, false}, infinity).
 
 poll(Pid) ->
     gen_server:call(Pid, {poll}, infinity).

@@ -185,6 +185,8 @@ handle_polling(Req, Sid, Config, Version) ->
     case {socketio_session:find(Sid), Method} of
         {{ok, Pid}, <<"GET">>} ->
             case socketio_session:pull_no_wait(Pid, self()) of
+                {error, noproc} ->
+                    {shutdown, Req, #http_state{action = error, config = Config, sid = Sid, version = Version}};
                 session_in_use ->
                     {ok, Req, #http_state{action = session_in_use, config = Config, sid = Sid, version = Version}};
                 [] ->
@@ -266,6 +268,8 @@ websocket_handle(_Data, Req, State) ->
 
 websocket_info(go, Req, {Config, Pid, RestMessages}) ->
     case socketio_session:pull(Pid, self()) of
+        {error, noproc} ->
+            {shutdown, Req, {Config, Pid, RestMessages}};
         session_in_use ->
             {ok, Req, {Config, Pid, RestMessages}, hibernate};
         Messages ->
