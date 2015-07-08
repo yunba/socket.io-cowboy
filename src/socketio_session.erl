@@ -20,7 +20,7 @@
 
 %% API
 -export([start_link/5, init_mnesia/0, configure/1, create/5, find/1, pull/2, pull_no_wait/2, poll/1, safe_poll/1, send/2, recv/2,
-         send_message/2, send_obj/2, emit/3, refresh/1, disconnect/1, unsub_caller/2]).
+         send_message/2, send_obj/2, emit/3, refresh/1, disconnect/1, unsub_caller/2, upgrade_transport/2, transport/1]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -39,7 +39,8 @@
     registered,
     opts,
     session_state,
-    peer_address}).
+    peer_address,
+    transport}).
 
 %%%===================================================================
 %%% API
@@ -115,6 +116,12 @@ disconnect(Pid) ->
 
 unsub_caller(Pid, Caller) ->
     gen_server:call(Pid, {unsub_caller, Caller}).
+
+upgrade_transport(Pid, Transport) ->
+    gen_server:call(Pid, {transport, Transport}).
+
+transport(Pid) ->
+    gen_server:call(Pid, {transport}).
 %%--------------------------------------------------------------------
 start_link(SessionId, SessionTimeout, Callback, Opts, PeerAddress) ->
     gen_server:start_link(?MODULE, [SessionId, SessionTimeout, Callback, Opts, PeerAddress], []).
@@ -127,13 +134,17 @@ start_link(SessionId, SessionTimeout, Callback, Opts, PeerAddress) ->
 init([SessionId, SessionTimeout, Callback, Opts, PeerAddress]) ->
     self() ! register_in_ets,
     TRef = erlang:send_after(SessionTimeout, self(), session_timeout),
-    {ok, #state{id = SessionId,
-                messages = [],
-                registered = false,
-                callback = Callback,
-                opts = Opts,
-                session_timeout_tref = TRef,
-                session_timeout = SessionTimeout, peer_address = PeerAddress}, hibernate}.
+    {ok, #state{
+        id = SessionId,
+        messages = [],
+        registered = false,
+        callback = Callback,
+        opts = Opts,
+        session_timeout_tref = TRef,
+        session_timeout = SessionTimeout,
+        peer_address = PeerAddress, 
+        transport = polling
+    }, hibernate}.
 
 %%--------------------------------------------------------------------
 handle_call({pull, Pid, Wait}, _From,  State = #state{messages = Messages, caller = undefined}) ->
@@ -172,6 +183,12 @@ handle_call({unsub_caller, Caller}, _From, State = #state{caller = PrevCaller}) 
         _ ->
             {reply, ok, State, hibernate}
     end;
+
+handle_call({transport, Transport}, _From, State) ->
+    {reply, ok, State#state{transport = Transport}, hibernate};
+
+handle_call({transport}, _From, State = #state{transport = Transport}) ->
+    {reply, Transport, State, hibernate};
 
 handle_call(_Request, _From, State) ->
     Reply = ok,
@@ -259,6 +276,9 @@ process_messages([Message|Rest], State = #state{id = SessionId, callback = Callb
         disconnect ->
             {stop, normal, ok, State};
         heartbeat ->
+            process_messages(Rest, State);
+        {ping, Data} ->                    %% only for socketio v1
+            send(self(), {pong, Data}),
             process_messages(Rest, State);
         {message, <<>>, EndPoint, Obj} ->
             case Callback:recv(self(), SessionId, {message, EndPoint, Obj}, SessionState) of

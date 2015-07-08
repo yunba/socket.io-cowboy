@@ -3,7 +3,7 @@
 -behaviour(gen_server).
 
 %% API
--export([start_link/0, publish_to_all/1, add_session/1, remove_session/1]).
+-export([start_link/0, publish_to_all/1, emit_to_all/2, add_session/1, remove_session/1]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -29,6 +29,9 @@ start_link() ->
 
 publish_to_all(Json) ->
     gen_server:call(?SERVER, {publish_to_all, Json}).
+
+emit_to_all(EventName, ArgsList) ->
+    gen_server:call(?SERVER, {emit_to_all, EventName, ArgsList}).
 
 add_session(Pid) ->
     gen_server:call(?SERVER, {add_session, Pid}).
@@ -82,6 +85,14 @@ handle_call({publish_to_all, Json}, _From, State) ->
                       socketio_session:send_obj(Pid, Json),
                       AccIn
               end, notused, State#state.sessions),
+    {reply, Reply, State};
+
+handle_call({emit_to_all, EventName, ArgsList}, _From, State) ->
+    Reply = ok,
+    sets:fold(fun(Pid, AccIn) ->
+        socketio_session:emit(Pid, EventName, ArgsList),
+        AccIn
+    end, notused, State#state.sessions),
     {reply, Reply, State};
 
 handle_call(_Request, _From, State) ->

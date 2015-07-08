@@ -21,6 +21,7 @@
          websocket_info/3, websocket_terminate/3]).
 
 -record(http_state, {action, config, sid, heartbeat_tref, messages, pid, version}).
+-record(websocket_state, {config, pid, messages, version}).
 
 init({_, http}, Req, [Config]) ->
     Req2 = enable_cors(Req),
@@ -49,10 +50,13 @@ init({_, http}, Req, [Config]) ->
     end.
 
 %% Http handlers
-handle(Req, HttpState = #http_state{action = create_session, version = Version, config = #config{heartbeat_timeout = HeartbeatTimeout,
-                                                                              session_timeout = SessionTimeout,
-                                                                              opts = Opts,
-                                                                              callback = Callback}}) ->
+handle(Req, HttpState = #http_state{action = create_session, version = Version, config = #config{
+    heartbeat = HeartbeatInterval,
+    heartbeat_timeout = HeartbeatTimeout,
+    session_timeout = SessionTimeout,
+    opts = Opts,
+    callback = Callback
+}}) ->
     Sid = uuids:new(),
     PeerAddress = cowboy_req:peer(Req),
 
@@ -68,22 +72,23 @@ handle(Req, HttpState = #http_state{action = create_session, version = Version, 
 
             HttpHeaders = text_headers();
         1 ->
-            HeartbeatTimeoutBin = list_to_binary(integer_to_list(HeartbeatTimeout)),
-            SessionTimeoutBin = list_to_binary(integer_to_list(SessionTimeout)),
-
-            Result = jiffy:encode({[{<<"sid">>, Sid}, {<<"pingInterval">>, HeartbeatTimeoutBin}, {<<"pingTimeout">>, SessionTimeoutBin}, {<<"upgrades">>, [<<"websocket">>]}]}),
+            Result = jiffy:encode({[
+                {<<"sid">>, Sid},
+                {<<"pingInterval">>, HeartbeatInterval}, {<<"pingTimeout">>, HeartbeatTimeout},
+                {<<"upgrades">>, [<<"websocket">>]}
+            ]}),
             ResultLen = [ list_to_integer([D]) || D <- integer_to_list(byte_size(Result) + 1) ],
             ResultLenBin = list_to_binary(ResultLen),
             Result2 = <<0, ResultLenBin/binary, 255, "0", Result/binary>>,
 
-            HttpHeaders = stream_headers()
+            HttpHeaders = stream_headers(Sid)
     end,
 
     {ok, Req1} = cowboy_req:reply(200, HttpHeaders, <<Result2/binary>>, Req),
     {ok, Req1, HttpState};
 
-handle(Req, HttpState = #http_state{action = data, messages = Messages, config = Config}) ->
-    {ok, Req1} = reply_messages(Req, Messages, Config, false),
+handle(Req, HttpState = #http_state{action = data, messages = Messages, config = Config, version = Version}) ->
+    {ok, Req1} = reply_messages(Req, Messages, Config, false, Version),
     {ok, Req1, HttpState};
 
 handle(Req, HttpState = #http_state{action = not_found}) ->
@@ -98,6 +103,9 @@ handle(Req, HttpState = #http_state{action = session_in_use}) ->
     {ok, Req1} = cowboy_req:reply(404, [], <<>>, Req),
     {ok, Req1, HttpState};
 
+handle(Req, HttpState = #http_state{action = ok, version = 1}) ->
+    {ok, Req1} = cowboy_req:reply(200, text_headers(), <<"ok">>, Req),
+    {ok, Req1, HttpState};
 handle(Req, HttpState = #http_state{action = ok}) ->
     {ok, Req1} = cowboy_req:reply(200, text_headers(), <<>>, Req),
     {ok, Req1, HttpState};
@@ -132,15 +140,30 @@ terminate(_Reason, _Req, _HttpState = #http_state{heartbeat_tref = HeartbeatTRef
 
 text_headers() ->
     [
-        {<<"content-Type">>, <<"text/plain; charset=utf-8">>}
+        {<<"Content-Type">>, <<"text/plain; charset=utf-8">>}
     ].
 
-stream_headers() ->
+stream_headers(IOCookie) ->
     [
-        {<<"content-Type">>, <<"application/octet-stream">>}
+        {<<"Set-Cookie">>, <<"io=", IOCookie/binary>>},
+        {<<"Content-Type">>, <<"application/octet-stream">>}
     ].
 
-reply_messages(Req, Messages, _Config = #config{protocol = Protocol}, SendNop) ->
+reply_messages(Req, Messages, _Config = #config{protocol = Protocol}, SendNop, 1) ->
+    Packet = case {SendNop, Messages} of
+                 {true, []} ->
+                     Protocol:encode_v1([nop]);
+                 _ ->
+                     Protocol:encode_v1(Messages)
+             end,
+
+    PacketLen = [list_to_integer([D]) || D <- integer_to_list(byte_size(Packet))],
+    PacketLenBin = list_to_binary(PacketLen),
+    Packet2 = <<0, PacketLenBin/binary, 255, Packet/binary>>,
+    {CookieIo, _} = cowboy_req:cookie(<<"io">>, Req),
+
+    cowboy_req:reply(200, stream_headers(CookieIo), Packet2, Req);
+reply_messages(Req, Messages, _Config = #config{protocol = Protocol}, SendNop, 0) ->
     Packet = case {SendNop, Messages} of
                  {true, []} ->
                      Protocol:encode([nop]);
@@ -164,14 +187,22 @@ safe_unsub_caller(Pid, Caller) ->
             error
     end.
 
-safe_poll(Req, HttpState = #http_state{config = Config = #config{protocol = Protocol}}, Pid, WaitIfEmpty) ->
+safe_poll(Req, HttpState = #http_state{config = Config = #config{protocol = Protocol}, version = Version}, Pid, WaitIfEmpty) ->
     try
         Messages = socketio_session:poll(Pid),
         case {WaitIfEmpty, Messages} of
+            {true, []} when Version =:= 1 ->
+                case socketio_session:transport(Pid) of
+                    websocket ->
+                        {ok, Req1} = reply_messages(Req, [], Config, true, Version),
+                        {ok, Req1, HttpState};
+                    _ ->
+                        {loop, Req, HttpState, hibernate}
+                end;
             {true, []} ->
                 {loop, Req, HttpState, hibernate};
             _ ->
-                {ok, Req1} = reply_messages(Req, Messages, Config, true),
+                {ok, Req1} = reply_messages(Req, Messages, Config, true, Version),
                 {ok, Req1, HttpState}
         end
     catch
@@ -188,10 +219,17 @@ handle_polling(Req, Sid, Config, Version) ->
                 {error, noproc} ->
                     {shutdown, Req, #http_state{action = error, config = Config, sid = Sid, version = Version}};
                 session_in_use ->
-                    {ok, Req, #http_state{action = session_in_use, config = Config, sid = Sid, version = Version}};
-                [] ->
-                    TRef = erlang:start_timer(Config#config.heartbeat, self(), {?MODULE, Pid}),
-                    {loop, Req, #http_state{action = heartbeat, config = Config, sid = Sid, heartbeat_tref = TRef, pid = Pid, version = Version}, hibernate};
+                    {shutdown, Req, #http_state{action = error, config = Config, sid = Sid, version = Version}};
+                [] when Version =:= 1 ->
+                    case socketio_session:transport(Pid) of
+                        websocket ->
+                            {ok, Req, #http_state{action = data, messages = [nop], config = Config, sid = Sid, pid = Pid, version = Version}};
+                        _ ->
+                            {loop, Req, #http_state{action = heartbeat, config = Config, sid = Sid, pid = Pid, version = Version}, hibernate}
+                    end;
+                [] when Version =:= 0 ->
+                    HeartBeatTimer = erlang:send_after(Config#config.heartbeat, self(), {?MODULE, Pid}),
+                    {loop, Req, #http_state{action = heartbeat, heartbeat_tref = HeartBeatTimer, config = Config, sid = Sid, pid = Pid, version = Version}, hibernate};
                 Messages ->
                     {ok, Req, #http_state{action = data, messages = Messages, config = Config, sid = Sid, pid = Pid, version = Version}}
             end;
@@ -199,7 +237,13 @@ handle_polling(Req, Sid, Config, Version) ->
             Protocol = Config#config.protocol,
             case cowboy_req:body(Req) of
                 {ok, Body, Req1} ->
-                    Messages = case catch(Protocol:decode(Body)) of
+                    {Body2, DecodeMethod} = case Version of
+                                0 -> {Body, decode};
+                                1 ->
+                                    [_LengthBin, PacketBin] = binary:split(Body, <<":">>),
+                                    {PacketBin, decode_v1}
+                            end,
+                    Messages = case catch(Protocol:DecodeMethod(Body2)) of
                                    {'EXIT', _Reason} ->
                                        [];
                                    Msgs ->
@@ -230,8 +274,9 @@ websocket_init(_TransportName, Req, [Config]) ->
                     erlang:monitor(process, Pid),
                     self() ! go,
                     erlang:start_timer(Config#config.heartbeat, self(), {?MODULE, Pid}),
-                    {ok, Req, {Config, Pid, []}, hibernate};
+                    {ok, Req, #websocket_state{config = Config, pid = Pid, messages = [], version = 0}, hibernate};
                 {error, not_found} ->
+                    error_logger:error_msg("websocket seeesion id ~p not found", [Sid]),
                     {shutdown, Req}
             end;
         _ ->
@@ -240,8 +285,8 @@ websocket_init(_TransportName, Req, [Config]) ->
                     case socketio_session:find(Sid) of
                         {ok, Pid} ->
                             erlang:monitor(process, Pid),
-                            self() ! go,
-                            {ok, Req, {Config, Pid, []}, hibernate};
+                            socketio_session:upgrade_transport(Pid, websocket),
+                            {ok, Req, #websocket_state{config = Config, pid = Pid, messages = [], version = 1}, hibernate};
                         {error, not_found} ->
                             {shutdown, Req}
                     end;
@@ -250,43 +295,64 @@ websocket_init(_TransportName, Req, [Config]) ->
             end
     end.
 
-websocket_handle({text, Data}, Req, {Config = #config{protocol = Protocol}, Pid, RestMessages}) ->
-    Messages = case catch(Protocol:decode(Data)) of
-                   {'EXIT', _Reason} ->
-                       [];
-                   Msgs ->
-                       Msgs
-               end,
-    case socketio_session:recv(Pid, Messages) of
-        noproc ->
-            {shutdown, Req, {Config, Pid, RestMessages}};
-        _ ->
-            {ok, Req, {Config, Pid, RestMessages}, hibernate}
+websocket_handle({text, Data}, Req, State = #websocket_state{
+    config = #config{protocol = Protocol}, pid = Pid, version = Version
+}) ->
+    DecodeMethod = case Version of
+                       0 -> decode;
+                       1 -> decode_v1
+                   end,
+    case catch (Protocol:DecodeMethod(Data)) of
+        {'EXIT', _Reason} ->
+            {ok, Req, State, hibernate};
+        [{ping, Rest}] ->               %% only for socketio v1
+            Packet = Protocol:encode_v1({pong, Rest}),
+            socketio_session:refresh(Pid),
+            {reply, {text, Packet}, Req, State, hibernate};
+        [upgrade] ->                    %% only for socketio v1
+            self() ! go,
+            {ok, Req, State, hibernate};
+        Msgs ->
+            case socketio_session:recv(Pid, Msgs) of
+                noproc ->
+                    {shutdown, Req, State};
+                _ ->
+                    {ok, Req, State, hibernate}
+            end
     end;
 websocket_handle(_Data, Req, State) ->
     {ok, Req, State, hibernate}.
 
-websocket_info(go, Req, {Config, Pid, RestMessages}) ->
+websocket_info(go, Req, State = #websocket_state{pid = Pid, messages = RestMessages}) ->
     case socketio_session:pull(Pid, self()) of
         {error, noproc} ->
-            {shutdown, Req, {Config, Pid, RestMessages}};
+            {shutdown, Req, State};
         session_in_use ->
-            {ok, Req, {Config, Pid, RestMessages}, hibernate};
+            {ok, Req, State, hibernate};
         Messages ->
             RestMessages2 = lists:append([RestMessages, Messages]),
             self() ! go_rest,
-            {ok, Req, {Config, Pid, RestMessages2}, hibernate}
+            {ok, Req, State#websocket_state{messages = RestMessages2}, hibernate}
     end;
-websocket_info(go_rest, Req, {Config = #config{protocol = Protocol}, Pid, RestMessages}) ->
+websocket_info(go_rest, Req, State = #websocket_state{
+    config = #config{protocol = Protocol}, messages = RestMessages, version = Version
+}) ->
     case RestMessages of
         [] ->
-            {ok, Req, {Config, Pid, []}, hibernate};
+            {ok, Req, State, hibernate};
         [Message | Rest] ->
             self() ! go_rest,
-            Packet = Protocol:encode(Message),
-            {reply, {text, Packet}, Req, {Config, Pid, Rest}, hibernate}
+
+            EncodeMethod = case Version of
+                               0 -> encode;
+                               1 -> encode_v1
+                           end,
+            Packet = Protocol:EncodeMethod(Message),
+            {reply, {text, Packet}, Req, State#websocket_state{messages = Rest}, hibernate}
     end;
-websocket_info({message_arrived, Pid}, Req, {Config, Pid, RestMessages}) ->
+websocket_info({message_arrived, Pid}, Req, State = #websocket_state{
+    pid = Pid, messages = RestMessages
+}) ->
     Messages =  case socketio_session:safe_poll(Pid) of
                     {error, noproc} ->
                         [];
@@ -295,18 +361,20 @@ websocket_info({message_arrived, Pid}, Req, {Config, Pid, RestMessages}) ->
                 end,
     RestMessages2 = lists:append([RestMessages, Messages]),
     self() ! go,
-    {ok, Req, {Config, Pid, RestMessages2}, hibernate};
-websocket_info({timeout, _TRef, {?MODULE, Pid}}, Req, {Config = #config{protocol = Protocol}, Pid, RestMessages}) ->
+    {ok, Req, State#websocket_state{messages = RestMessages2}, hibernate};
+websocket_info({timeout, _TRef, {?MODULE, Pid}}, Req, State = #websocket_state{
+    config = #config{protocol = Protocol, heartbeat = HeartBeat}, pid = Pid, version = 0
+}) ->
     socketio_session:refresh(Pid),
-    erlang:start_timer(Config#config.heartbeat, self(), {?MODULE, Pid}),
+    erlang:start_timer(HeartBeat, self(), {?MODULE, Pid}),
     Packet = Protocol:encode(heartbeat),
-    {reply, {text, Packet}, Req, {Config, Pid, RestMessages}, hibernate};
-websocket_info({'DOWN', _Ref, process, Pid, _Reason}, Req, State = {_Config, Pid, _RestMessages}) ->
+    {reply, {text, Packet}, Req, State, hibernate};
+websocket_info({'DOWN', _Ref, process, Pid, _Reason}, Req, State = #websocket_state{pid = Pid}) ->
     {shutdown, Req, State};
 websocket_info(_Info, Req, State) ->
     {ok, Req, State, hibernate}.
 
-websocket_terminate(_Reason, _Req, _State = {_Config, Pid, _RestMessages}) ->
+websocket_terminate(_Reason, _Req, #websocket_state{pid = Pid}) ->
     socketio_session:disconnect(Pid),
     ok.
 
