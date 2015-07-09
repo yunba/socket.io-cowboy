@@ -40,6 +40,8 @@ encode_v1(Messages) when is_list(Messages) ->
         Packet = encode_v1(Message),
         [Packet | AccIn]
     end, [], Messages);
+encode_v1(disconnect) ->
+    <<"1">>;
 encode_v1({pong, Data}) ->
     <<"3", Data/binary>>;
 encode_v1({message, _Id, _EndPoint, Message}) ->
@@ -284,20 +286,23 @@ make_sure_binary(Data) ->
 %%% ENCODING
 disconnect_test_() ->
     [?_assertEqual(<<"0::/test">>, disconnect(<<"/test">>)),
-        ?_assertEqual(<<"0::">>, disconnect(<<>>))].
+        ?_assertEqual(<<"0::">>, disconnect(<<>>)),
+        ?_assertEqual(<<"1">>, encode_v1(disconnect))].
 
 connect_test_() -> []. % Only need to read, never to encode
 
 %% No format specified in the spec.
 heartbeat_test() ->
-    ?assertEqual(<<"2::">>, heartbeat()).
+    [?_assertEqual(<<"2::">>, heartbeat()),
+        ?_assertEqual(<<"3test">>, encode_v1({pong, <<"test">>}))].
 
 message_test_() ->
     [?_assertEqual(<<"3:1::blabla">>, message(1, <<"">>, <<"blabla">>)),
         ?_assertEqual(<<"3:2::bla">>, message(2, <<"">>, <<"bla">>)),
         ?_assertEqual(<<"3:::bla">>, message(<<"">>, <<"">>, <<"bla">>)),
         ?_assertEqual(<<"3:4+:b:bla">>, message(<<"4+">>, <<"b">>, <<"bla">>)),
-        ?_assertEqual(<<"3::/test:bla">>, message(<<"">>, <<"/test">>, <<"bla">>))].
+        ?_assertEqual(<<"3::/test:bla">>, message(<<"">>, <<"/test">>, <<"bla">>)),
+        ?_assertEqual(<<"4test">>, encode_v1({message, <<>>, <<>>, <<"test">>}))].
 
 json_test_() ->
     [?_assertEqual(<<"4:1::{\"a\":\"b\"}">>,
@@ -319,21 +324,24 @@ error_test_() ->
 %% DECODING TESTS
 d_disconnect_test_() ->
     [?_assertEqual({disconnect, <<"/test">>}, decode_packet(<<"0::/test">>)),
-        ?_assertEqual(disconnect, decode_packet(<<"0">>))].
+        ?_assertEqual(disconnect, decode_packet(<<"0">>)),
+        ?_assertEqual(disconnect, decode_packet_v1(<<"1">>))].
 
 d_connect_test_() ->
     [].
 
 %%% No format specified in the spec.
 d_heartbeat_test() ->
-    ?assertEqual(heartbeat, decode_packet(heartbeat())).
+    [?_assertEqual(heartbeat, decode_packet(heartbeat())),
+        ?_assertEqual({ping, <<"test">>}, decode_packet_v1(<<"2test">>))].
 
 d_message_test_() ->
     [?_assertEqual({message, 1, <<>>, <<"blabla">>}, decode_packet(message(1, <<"">>, <<"blabla">>))),
         ?_assertEqual({message, 2, <<>>, <<"bla">>}, decode_packet(message(2, <<"">>, <<"bla">>))),
         ?_assertEqual({message, <<"">>, <<>>, <<"bla">>}, decode_packet(message(<<"">>, <<"">>, <<"bla">>))),
         ?_assertEqual({message, "4+", <<"b">>, <<"bla">>}, decode_packet(message(<<"4+">>, <<"b">>, <<"bla">>))),
-        ?_assertEqual({message, <<"">>, <<"/test">>, <<"bla">>}, decode_packet(message(<<"">>, <<"/test">>, <<"bla">>)))].
+        ?_assertEqual({message, <<"">>, <<"/test">>, <<"bla">>}, decode_packet(message(<<"">>, <<"/test">>, <<"bla">>))),
+        ?_assertEqual({event, 1234, <<>>, <<"test">>, [{<<"a">>, <<"b">>}]}, decode_packet_v1(<<"421234[\"test\",{\"a\":\"b\"}]">>))].
 
 d_json_test_() ->
     [?_assertEqual({json, 1, <<>>, [{<<"a">>,<<"b">>}]},
