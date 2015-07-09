@@ -34,7 +34,12 @@ encode(disconnect) ->
     disconnect(<<>>).
 
 encode_v1([Message]) ->
-    encode_v1(Message);
+    [encode_v1(Message)];
+encode_v1(Messages) when is_list(Messages) ->
+    lists:foldr(fun(Message, AccIn) ->
+        Packet = encode_v1(Message),
+        [Packet | AccIn]
+    end, [], Messages);
 encode_v1({pong, Data}) ->
     <<"3", Data/binary>>;
 encode_v1({message, _Id, _EndPoint, Message}) ->
@@ -230,8 +235,12 @@ decode_message_v1(<<"1">>) -> disconnect;
 decode_message_v1(<<"2", Rest/binary>>) ->
     case binary:split(Rest, <<"[">>) of
         [<<>>, Msg] ->
-            [EventName, {EventArgs}] = jiffy:decode(<<"[", Msg/binary>>),
-            {event, <<>>, <<>>, EventName, EventArgs};
+             case jiffy:decode(<<"[", Msg/binary>>)of
+                 [EventName, {EventArgs}] ->
+                     {event, <<>>, <<>>, EventName, EventArgs};
+                 [EventName] ->
+                     {event, <<>>, <<>>, EventName, undefined}
+             end;
         [Id, Msg] ->
             Id2 = binary_to_integer(Id),
             [EventName, {EventArgs}] = jiffy:decode(<<"[", Msg/binary>>),

@@ -150,19 +150,21 @@ stream_headers(IOCookie) ->
     ].
 
 reply_messages(Req, Messages, _Config = #config{protocol = Protocol}, SendNop, 1) ->
-    Packet = case {SendNop, Messages} of
+    PacketList = case {SendNop, Messages} of
                  {true, []} ->
                      Protocol:encode_v1([nop]);
                  _ ->
                      Protocol:encode_v1(Messages)
              end,
+    PacketListBin = lists:foldl(fun(Packet, AccIn) ->
+        PacketLen = [list_to_integer([D]) || D <- integer_to_list(byte_size(Packet))],
+        PacketLenBin = list_to_binary(PacketLen),
+        <<AccIn/binary, 0, PacketLenBin/binary, 255, Packet/binary>>
+    end, <<>>, PacketList),
 
-    PacketLen = [list_to_integer([D]) || D <- integer_to_list(byte_size(Packet))],
-    PacketLenBin = list_to_binary(PacketLen),
-    Packet2 = <<0, PacketLenBin/binary, 255, Packet/binary>>,
     {CookieIo, _} = cowboy_req:cookie(<<"io">>, Req),
 
-    cowboy_req:reply(200, stream_headers(CookieIo), Packet2, Req);
+    cowboy_req:reply(200, stream_headers(CookieIo), PacketListBin, Req);
 reply_messages(Req, Messages, _Config = #config{protocol = Protocol}, SendNop, 0) ->
     Packet = case {SendNop, Messages} of
                  {true, []} ->
@@ -343,11 +345,13 @@ websocket_info(go_rest, Req, State = #websocket_state{
         [Message | Rest] ->
             self() ! go_rest,
 
-            EncodeMethod = case Version of
-                               0 -> encode;
-                               1 -> encode_v1
-                           end,
-            Packet = Protocol:EncodeMethod(Message),
+            Packet = case Version of
+                         0 ->
+                             Protocol:encode(Message);
+                         1 ->
+                             [Pkg] = Protocol:encode_v1([Message]),
+                             Pkg
+                     end,
             {reply, {text, Packet}, Req, State#websocket_state{messages = Rest}, hibernate}
     end;
 websocket_info({message_arrived, Pid}, Req, State = #websocket_state{
