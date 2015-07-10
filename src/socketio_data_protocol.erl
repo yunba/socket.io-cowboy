@@ -4,7 +4,7 @@
 
 %% The source code was taken and modified from https://github.com/yrashk/socket.io-erlang/blob/master/src/socketio_data_v1.erl
 
--export([encode/1,encode_v1/1,decode/1,decode_v1/1]).
+-export([encode/1,encode_v1/1,decode/1,decode_v1/1, decode_v1_for_websocket/1]).
 
 -define(FRAME, 16#fffd).
 
@@ -38,7 +38,7 @@ encode_v1(Messages) when is_list(Messages) ->
         encode_v1(Message)
     end, Messages);
 encode_v1(disconnect) ->
-    <<"1">>;
+    <<"41">>;
 encode_v1({pong, Data}) ->
     <<"3", Data/binary>>;
 encode_v1({message, _Id, _EndPoint, Message}) ->
@@ -172,6 +172,8 @@ decode(<<?FRAME/utf8, Rest/binary>>) ->
 decode(Binary) ->
     [decode_packet(Binary)].
 
+decode_v1_for_websocket(Packet) when is_binary(Packet) ->
+    [decode_packet_v1(Packet)].
 decode_v1(BodyBin) when is_binary(BodyBin) ->
     decode_v1(parse_polling_body_for_v1(BodyBin));
 decode_v1(Packets) when is_list(Packets) ->
@@ -299,7 +301,7 @@ make_sure_binary(Data) ->
 disconnect_test_() ->
     [?_assertEqual(<<"0::/test">>, disconnect(<<"/test">>)),
         ?_assertEqual(<<"0::">>, disconnect(<<>>)),
-        ?_assertEqual(<<"1">>, encode_v1(disconnect))].
+        ?_assertEqual(<<"41">>, encode_v1(disconnect))].
 
 connect_test_() -> []. % Only need to read, never to encode
 

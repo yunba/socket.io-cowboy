@@ -156,12 +156,7 @@ reply_messages(Req, Messages, _Config = #config{protocol = Protocol}, SendNop, 1
                  _ ->
                      Protocol:encode_v1(Messages)
              end,
-    PacketListBin = lists:foldl(fun(Packet, AccIn) ->
-        PacketLen = [list_to_integer([D]) || D <- integer_to_list(byte_size(Packet))],
-        PacketLenBin = list_to_binary(PacketLen),
-        <<AccIn/binary, 0, PacketLenBin/binary, 255, Packet/binary>>
-    end, <<>>, PacketList),
-
+    PacketListBin = encode_polling_packets_v1(PacketList),
     {CookieIo, _} = cowboy_req:cookie(<<"io">>, Req),
 
     cowboy_req:reply(200, stream_headers(CookieIo), PacketListBin, Req);
@@ -209,11 +204,11 @@ safe_poll(Req, HttpState = #http_state{config = Config = #config{protocol = Prot
         end
     catch
         exit:{noproc, _} when Version =:= 1 ->
-            {ok, RD} = cowboy_req:reply(200, text_headers(), Protocol:encode_v1(disconnect), Req),
+            {CookieIo, _} = cowboy_req:cookie(<<"io">>, Req),
+            {ok, RD} = cowboy_req:reply(200, stream_headers(CookieIo), encode_polling_packets_v1(Protocol:encode_v1(disconnect)), Req),
             {ok, RD, HttpState#http_state{action = disconnect}};
         exit:{noproc, _} when Version =:= 0 ->
-            {CookieIo, _} = cowboy_req:cookie(<<"io">>, Req),
-            {ok, RD} = cowboy_req:reply(200, stream_headers(CookieIo), Protocol:encode(disconnect), Req),
+            {ok, RD} = cowboy_req:reply(200, text_headers(), Protocol:encode(disconnect), Req),
             {ok, RD, HttpState#http_state{action = disconnect}}
     end.
 
@@ -305,7 +300,7 @@ websocket_handle({text, Data}, Req, State = #websocket_state{
 }) ->
     DecodeMethod = case Version of
                        0 -> decode;
-                       1 -> decode_v1
+                       1 -> decode_v1_for_websocket
                    end,
     case catch (Protocol:DecodeMethod(Data)) of
         {'EXIT', _Reason} ->
@@ -393,3 +388,10 @@ enable_cors(Req) ->
             Req1 = cowboy_req:set_resp_header(<<"access-control-allow-origin">>, Origin, Req),
             cowboy_req:set_resp_header(<<"access-control-allow-credentials">>, <<"true">>, Req1)
     end.
+
+encode_polling_packets_v1(PacketList) ->
+    lists:foldl(fun(Packet, AccIn) ->
+        PacketLen = [list_to_integer([D]) || D <- integer_to_list(byte_size(Packet))],
+        PacketLenBin = list_to_binary(PacketLen),
+        <<AccIn/binary, 0, PacketLenBin/binary, 255, Packet/binary>>
+    end, <<>>, PacketList).
