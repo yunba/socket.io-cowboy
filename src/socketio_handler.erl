@@ -208,8 +208,12 @@ safe_poll(Req, HttpState = #http_state{config = Config = #config{protocol = Prot
                 {ok, Req1, HttpState}
         end
     catch
-        exit:{noproc, _} ->
-            {ok, RD} = cowboy_req:reply(200, text_headers(), Protocol:encode(disconnect), Req),
+        exit:{noproc, _} when Version =:= 1 ->
+            {ok, RD} = cowboy_req:reply(200, text_headers(), Protocol:encode_v1(disconnect), Req),
+            {ok, RD, HttpState#http_state{action = disconnect}};
+        exit:{noproc, _} when Version =:= 0 ->
+            {CookieIo, _} = cowboy_req:cookie(<<"io">>, Req),
+            {ok, RD} = cowboy_req:reply(200, stream_headers(CookieIo), Protocol:encode(disconnect), Req),
             {ok, RD, HttpState#http_state{action = disconnect}}
     end.
 
@@ -239,14 +243,14 @@ handle_polling(Req, Sid, Config, Version) ->
             Protocol = Config#config.protocol,
             case cowboy_req:body(Req) of
                 {ok, Body, Req1} ->
-                    {Body2, DecodeMethod} = case Version of
-                                0 -> {Body, decode};
-                                1 ->
-                                    [_LengthBin, PacketBin] = binary:split(Body, <<":">>),
-                                    {PacketBin, decode_v1}
+                    DecodeMethod = case Version of
+                                0 -> decode;
+                                1 -> decode_v1
                             end,
-                    Messages = case catch(Protocol:DecodeMethod(Body2)) of
+                    Messages = case catch(Protocol:DecodeMethod(Body)) of
                                    {'EXIT', _Reason} ->
+                                       [];
+                                   {error, _} ->
                                        [];
                                    Msgs ->
                                        Msgs
@@ -278,7 +282,6 @@ websocket_init(_TransportName, Req, [Config]) ->
                     erlang:start_timer(Config#config.heartbeat, self(), {?MODULE, Pid}),
                     {ok, Req, #websocket_state{config = Config, pid = Pid, messages = [], version = 0}, hibernate};
                 {error, not_found} ->
-                    error_logger:error_msg("websocket seeesion id ~p not found", [Sid]),
                     {shutdown, Req}
             end;
         _ ->

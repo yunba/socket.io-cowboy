@@ -33,13 +33,10 @@ encode(nop) ->
 encode(disconnect) ->
     disconnect(<<>>).
 
-encode_v1([Message]) ->
-    [encode_v1(Message)];
 encode_v1(Messages) when is_list(Messages) ->
-    lists:foldr(fun(Message, AccIn) ->
-        Packet = encode_v1(Message),
-        [Packet | AccIn]
-    end, [], Messages);
+    lists:map(fun(Message) ->
+        encode_v1(Message)
+    end, Messages);
 encode_v1(disconnect) ->
     <<"1">>;
 encode_v1({pong, Data}) ->
@@ -175,8 +172,12 @@ decode(<<?FRAME/utf8, Rest/binary>>) ->
 decode(Binary) ->
     [decode_packet(Binary)].
 
-decode_v1(Binary) ->
-    [decode_packet_v1(Binary)].
+decode_v1(BodyBin) when is_binary(BodyBin) ->
+    decode_v1(parse_polling_body_for_v1(BodyBin));
+decode_v1(Packets) when is_list(Packets) ->
+    lists:map(fun(Packet) ->
+        decode_packet_v1(Packet)
+    end, Packets).
 
 decode_packet(<<"0">>) -> disconnect;
 decode_packet(<<"0::", EndPoint/binary>>) -> {disconnect, EndPoint};
@@ -248,6 +249,17 @@ decode_message_v1(<<"2", Rest/binary>>) ->
             [EventName, {EventArgs}] = jiffy:decode(<<"[", Msg/binary>>),
             {event, Id2, <<>>, EventName, EventArgs}
     end.
+
+parse_polling_body_for_v1(Body) ->
+    parse_polling_body_for_v1(Body, []).
+
+parse_polling_body_for_v1(<<>>, Packets) ->
+    Packets;
+parse_polling_body_for_v1(Rest, Packets) ->
+    [LengthBin, RestBin] = binary:split(Rest, <<":">>),
+    Length = binary_to_integer(LengthBin),
+    <<Packet:Length/binary, Rest2/binary>> = RestBin,
+    parse_polling_body_for_v1(Rest2, [Packet | Packets]).
 
 id(X) -> id(X, "").
 id(<<$:, Rest/binary>>, "") ->

@@ -165,6 +165,8 @@ handle_call({pull, Pid, Wait}, _From,  State = #state{messages = Messages, calle
 handle_call({pull, _Pid, _}, _From,  State) ->
     {reply, session_in_use, State, hibernate};
 
+handle_call({poll}, _From, State = #state{messages = [], transport = polling}) ->
+    {reply, [], State, hibernate};
 handle_call({poll}, _From, State = #state{messages = Messages}) ->
     State1 = refresh_session_timeout(State),
     {reply, lists:reverse(Messages), State1#state{messages = [], caller = undefined}, hibernate};
