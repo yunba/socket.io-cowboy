@@ -20,7 +20,7 @@
          websocket_init/3, websocket_handle/3,
          websocket_info/3, websocket_terminate/3]).
 
--record(http_state, {action, config, sid, heartbeat_tref, messages, pid, version}).
+-record(http_state, {action, config, sid, heartbeat_tref, messages, pid, version, jsonp}).
 -record(websocket_state, {config, pid, messages, version}).
 
 init({_, http}, Req, [Config]) ->
@@ -30,18 +30,19 @@ init({_, http}, Req, [Config]) ->
         [<<"1">>] ->
             {ok, Req2, #http_state{action = create_session, config = Config, version = 0}};
         [<<"1">>, <<"xhr-polling">>, Sid] ->
-            handle_polling(Req2, Sid, Config, 0);
+            handle_polling(Req2, Sid, Config, 0, undefined);
         [<<"1">>, <<"websocket">>, _Sid] ->
             {upgrade, protocol, cowboy_websocket};
         _ ->
             {Sid, _} = cowboy_req:qs_val(<<"sid">>, Req2),
             {Transport, _} = cowboy_req:qs_val(<<"transport">>, Req2),
+            {JsonP, _} = cowboy_req:qs_val(<<"j">>, Req2),
 
             case {Transport, Sid} of
                 {<<"polling">>, undefined} ->
-                    {ok, Req2, #http_state{action = create_session, config = Config, version = 1}};
+                    {ok, Req2, #http_state{action = create_session, config = Config, version = 1, jsonp = JsonP}};
                 {<<"polling">>, _} when is_binary(Sid) ->
-                    handle_polling(Req2, Sid, Config, 1);
+                    handle_polling(Req2, Sid, Config, 1, JsonP);
                 {<<"websocket">>, _} ->
                     {upgrade, protocol, cowboy_websocket};
                 _ ->
@@ -50,7 +51,7 @@ init({_, http}, Req, [Config]) ->
     end.
 
 %% Http handlers
-handle(Req, HttpState = #http_state{action = create_session, version = Version, config = #config{
+handle(Req, HttpState = #http_state{action = create_session, version = Version, jsonp = JsonP, config = #config{
     heartbeat = HeartbeatInterval,
     heartbeat_timeout = HeartbeatTimeout,
     session_timeout = SessionTimeout,
@@ -70,25 +71,33 @@ handle(Req, HttpState = #http_state{action = create_session, version = Version, 
             Result = <<":", HeartbeatTimeoutBin/binary, ":", SessionTimeoutBin/binary, ":websocket,xhr-polling">>,
             Result2 = <<Sid/binary, Result/binary>>,
 
-            HttpHeaders = text_headers();
+            {ok, Req1} = cowboy_req:reply(200, text_headers(), <<Result2/binary>>, Req);
         1 ->
             Result = jiffy:encode({[
                 {<<"sid">>, Sid},
                 {<<"pingInterval">>, HeartbeatInterval}, {<<"pingTimeout">>, HeartbeatTimeout},
                 {<<"upgrades">>, [<<"websocket">>]}
             ]}),
-            ResultLen = [ list_to_integer([D]) || D <- integer_to_list(byte_size(Result) + 1) ],
-            ResultLenBin = list_to_binary(ResultLen),
-            Result2 = <<0, ResultLenBin/binary, 255, "0", Result/binary>>,
 
-            HttpHeaders = stream_headers(Sid)
+            case JsonP of
+                undefined ->
+                    ResultLen = [ list_to_integer([D]) || D <- integer_to_list(byte_size(Result) + 1) ],
+                    ResultLenBin = list_to_binary(ResultLen),
+                    Result2 = <<0, ResultLenBin/binary, 255, "0", Result/binary>>,
+                    HttpHeaders = stream_headers(Sid);
+                Num ->
+                    ResultLenBin = integer_to_binary(byte_size(Result) + 1),
+                    Rs = binary:replace(Result, <<"\"">>, <<"\\\"">>, [global]),
+                    Result2 = <<"___eio[", Num/binary, "](\"", ResultLenBin/binary, ":0", Rs/binary, "\");">>,
+                    HttpHeaders = javascript_headers(Sid)
+            end,
+
+            {ok, Req1} = cowboy_req:reply(200, HttpHeaders, <<Result2/binary>>, Req)
     end,
-
-    {ok, Req1} = cowboy_req:reply(200, HttpHeaders, <<Result2/binary>>, Req),
     {ok, Req1, HttpState};
 
-handle(Req, HttpState = #http_state{action = data, messages = Messages, config = Config, version = Version}) ->
-    {ok, Req1} = reply_messages(Req, Messages, Config, false, Version),
+handle(Req, HttpState = #http_state{action = data, messages = Messages, config = Config, version = Version, jsonp = JsonP}) ->
+    {ok, Req1} = reply_messages(Req, Messages, Config, false, Version, JsonP),
     {ok, Req1, HttpState};
 
 handle(Req, HttpState = #http_state{action = not_found}) ->
@@ -149,18 +158,36 @@ stream_headers(IOCookie) ->
         {<<"Content-Type">>, <<"application/octet-stream">>}
     ].
 
-reply_messages(Req, Messages, _Config = #config{protocol = Protocol}, SendNop, 1) ->
+javascript_headers(IOCookie) ->
+    [
+        {<<"Set-Cookie">>, <<"io=", IOCookie/binary>>},
+        {<<"Content-Type">>, <<"text/javascript; charset=UTF-8">>},
+        {<<"X-XSS-Protection">>, <<"0">>}
+    ].
+
+reply_messages(Req, Messages, _Config = #config{protocol = Protocol}, SendNop, 1, undefined) ->
     PacketList = case {SendNop, Messages} of
                  {true, []} ->
                      Protocol:encode_v1([nop]);
                  _ ->
                      Protocol:encode_v1(Messages)
              end,
-    PacketListBin = encode_polling_packets_v1(PacketList),
+    PacketListBin = encode_polling_xhr_packets_v1(PacketList),
     {CookieIo, _} = cowboy_req:cookie(<<"io">>, Req),
 
     cowboy_req:reply(200, stream_headers(CookieIo), PacketListBin, Req);
-reply_messages(Req, Messages, _Config = #config{protocol = Protocol}, SendNop, 0) ->
+reply_messages(Req, Messages, _Config = #config{protocol = Protocol}, SendNop, 1, JsonP) ->
+    PacketList = case {SendNop, Messages} of
+                     {true, []} ->
+                         Protocol:encode_v1([nop]);
+                     _ ->
+                         Protocol:encode_v1(Messages)
+                 end,
+    PacketListBin = encode_polling_json_packets_v1(PacketList, JsonP),
+    {CookieIo, _} = cowboy_req:cookie(<<"io">>, Req),
+
+    cowboy_req:reply(200, javascript_headers(CookieIo), PacketListBin, Req);
+reply_messages(Req, Messages, _Config = #config{protocol = Protocol}, SendNop, 0, _JsonP) ->
     Packet = case {SendNop, Messages} of
                  {true, []} ->
                      Protocol:encode([nop]);
@@ -184,14 +211,14 @@ safe_unsub_caller(Pid, Caller) ->
             error
     end.
 
-safe_poll(Req, HttpState = #http_state{config = Config = #config{protocol = Protocol}, version = Version}, Pid, WaitIfEmpty) ->
+safe_poll(Req, HttpState = #http_state{config = Config = #config{protocol = Protocol}, version = Version, jsonp = JsonP}, Pid, WaitIfEmpty) ->
     try
         Messages = socketio_session:poll(Pid),
         case {WaitIfEmpty, Messages} of
             {true, []} when Version =:= 1 ->
                 case socketio_session:transport(Pid) of
                     websocket ->
-                        {ok, Req1} = reply_messages(Req, [], Config, true, Version),
+                        {ok, Req1} = reply_messages(Req, [], Config, true, Version, JsonP),
                         {ok, Req1, HttpState};
                     _ ->
                         {loop, Req, HttpState, hibernate}
@@ -199,50 +226,67 @@ safe_poll(Req, HttpState = #http_state{config = Config = #config{protocol = Prot
             {true, []} ->
                 {loop, Req, HttpState, hibernate};
             _ ->
-                {ok, Req1} = reply_messages(Req, Messages, Config, true, Version),
+                {ok, Req1} = reply_messages(Req, Messages, Config, true, Version, JsonP),
                 {ok, Req1, HttpState}
         end
     catch
         exit:{noproc, _} when Version =:= 1 ->
             {CookieIo, _} = cowboy_req:cookie(<<"io">>, Req),
-            {ok, RD} = cowboy_req:reply(200, stream_headers(CookieIo), encode_polling_packets_v1(Protocol:encode_v1(disconnect)), Req),
+            {ok, RD} = cowboy_req:reply(200, stream_headers(CookieIo), encode_polling_xhr_packets_v1(Protocol:encode_v1(disconnect)), Req),
             {ok, RD, HttpState#http_state{action = disconnect}};
         exit:{noproc, _} when Version =:= 0 ->
             {ok, RD} = cowboy_req:reply(200, text_headers(), Protocol:encode(disconnect), Req),
             {ok, RD, HttpState#http_state{action = disconnect}}
     end.
 
-handle_polling(Req, Sid, Config, Version) ->
+handle_polling(Req, Sid, Config, Version, JsonP) ->
     {Method, _} = cowboy_req:method(Req),
     case {socketio_session:find(Sid), Method} of
         {{ok, Pid}, <<"GET">>} ->
             case socketio_session:pull_no_wait(Pid, self()) of
                 {error, noproc} ->
-                    {shutdown, Req, #http_state{action = error, config = Config, sid = Sid, version = Version}};
+                    {shutdown, Req, #http_state{action = error, config = Config, sid = Sid, version = Version, jsonp = JsonP}};
                 session_in_use ->
-                    {shutdown, Req, #http_state{action = error, config = Config, sid = Sid, version = Version}};
+                    {shutdown, Req, #http_state{action = error, config = Config, sid = Sid, version = Version, jsonp = JsonP}};
                 [] when Version =:= 1 ->
                     case socketio_session:transport(Pid) of
                         websocket ->
-                            {ok, Req, #http_state{action = data, messages = [nop], config = Config, sid = Sid, pid = Pid, version = Version}};
+                            {ok, Req, #http_state{action = data, messages = [nop], config = Config, sid = Sid, pid = Pid, version = Version, jsonp = JsonP}};
                         _ ->
-                            {loop, Req, #http_state{action = heartbeat, config = Config, sid = Sid, pid = Pid, version = Version}, hibernate}
+                            {loop, Req, #http_state{action = heartbeat, config = Config, sid = Sid, pid = Pid, version = Version, jsonp = JsonP}, hibernate}
                     end;
                 [] when Version =:= 0 ->
                     HeartBeatTimer = erlang:send_after(Config#config.heartbeat, self(), {?MODULE, Pid}),
-                    {loop, Req, #http_state{action = heartbeat, heartbeat_tref = HeartBeatTimer, config = Config, sid = Sid, pid = Pid, version = Version}, hibernate};
+                    {loop, Req, #http_state{action = heartbeat, heartbeat_tref = HeartBeatTimer, config = Config, sid = Sid, pid = Pid, version = Version, jsonp = JsonP}, hibernate};
                 Messages ->
-                    {ok, Req, #http_state{action = data, messages = Messages, config = Config, sid = Sid, pid = Pid, version = Version}}
+                    {ok, Req, #http_state{action = data, messages = Messages, config = Config, sid = Sid, pid = Pid, version = Version, jsonp = JsonP}}
             end;
         {{ok, Pid}, <<"POST">>} ->
             Protocol = Config#config.protocol,
-            case cowboy_req:body(Req) of
-                {ok, Body, Req1} ->
+            ReqData = case JsonP of
+                          undefined ->
+                              case cowboy_req:body(Req) of
+                                  {ok, Body, Req1} ->
+                                      {ok, Body, Req1};
+                                  {error, _} ->
+                                      error
+                              end;
+                          _Num ->
+                              case cowboy_req:body_qs(Req) of
+                                  {ok, PostVals, Req1} ->
+                                      Data = proplists:get_value(<<"d">>, PostVals),
+                                      {ok, Data, Req1};
+                                  {error, _} ->
+                                      error
+                              end
+                      end,
+            case ReqData of
+                {ok, Data2, Req2} ->
                     DecodeMethod = case Version of
                                 0 -> decode;
                                 1 -> decode_v1
                             end,
-                    Messages = case catch(Protocol:DecodeMethod(Body)) of
+                    Messages = case catch(Protocol:DecodeMethod(Data2)) of
                                    {'EXIT', _Reason} ->
                                        [];
                                    {error, _} ->
@@ -252,17 +296,17 @@ handle_polling(Req, Sid, Config, Version) ->
                                end,
                     case socketio_session:recv(Pid, Messages) of
                         noproc ->
-                            {shutdown, Req, #http_state{action = error, config = Config, sid = Sid, version = Version}};
+                            {shutdown, Req2, #http_state{action = error, config = Config, sid = Sid, version = Version, jsonp = JsonP}};
                         _ ->
-                            {ok, Req1, #http_state{action = ok, config = Config, sid = Sid, version = Version}}
+                            {ok, Req2, #http_state{action = ok, config = Config, sid = Sid, version = Version, jsonp = JsonP}}
                     end;
-                {error, _} ->
+                error ->
                     {shutdown, Req, #http_state{action = error, config = Config, sid = Sid, version = Version}}
             end;
         {{error, not_found}, _} ->
-            {ok, Req, #http_state{action = not_found, sid = Sid, config = Config, version = Version}};
+            {ok, Req, #http_state{action = not_found, sid = Sid, config = Config, version = Version, jsonp = JsonP}};
         _ ->
-            {ok, Req, #http_state{action = error, sid = Sid, config = Config, version = Version}}
+            {ok, Req, #http_state{action = error, sid = Sid, config = Config, version = Version, jsonp = JsonP}}
     end.
 
 %% Websocket handlers
@@ -389,9 +433,17 @@ enable_cors(Req) ->
             cowboy_req:set_resp_header(<<"access-control-allow-credentials">>, <<"true">>, Req1)
     end.
 
-encode_polling_packets_v1(PacketList) ->
+encode_polling_xhr_packets_v1(PacketList) ->
     lists:foldl(fun(Packet, AccIn) ->
         PacketLen = [list_to_integer([D]) || D <- integer_to_list(byte_size(Packet))],
         PacketLenBin = list_to_binary(PacketLen),
         <<AccIn/binary, 0, PacketLenBin/binary, 255, Packet/binary>>
     end, <<>>, PacketList).
+
+encode_polling_json_packets_v1(PacketList, JsonP) ->
+    Payload = lists:foldl(fun(Packet, AccIn) ->
+        ResultLenBin = integer_to_binary(byte_size(Packet)),
+        Rs = binary:replace(Packet, <<"\"">>, <<"\\\"">>, [global]),
+        <<AccIn/binary, ResultLenBin/binary, ":", Rs/binary>>
+    end, <<>>, PacketList),
+    <<"___eio[", JsonP/binary, "](\"", Payload/binary, "\");">>.
