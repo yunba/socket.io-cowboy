@@ -84,12 +84,12 @@ handle(Req, HttpState = #http_state{action = create_session, version = Version, 
                     ResultLen = [ list_to_integer([D]) || D <- integer_to_list(byte_size(Result) + 1) ],
                     ResultLenBin = list_to_binary(ResultLen),
                     Result2 = <<0, ResultLenBin/binary, 255, "0", Result/binary>>,
-                    HttpHeaders = stream_headers(Sid);
+                    HttpHeaders = stream_headers();
                 Num ->
                     ResultLenBin = integer_to_binary(byte_size(Result) + 1),
                     Rs = binary:replace(Result, <<"\"">>, <<"\\\"">>, [global]),
                     Result2 = <<"___eio[", Num/binary, "](\"", ResultLenBin/binary, ":0", Rs/binary, "\");">>,
-                    HttpHeaders = javascript_headers(Sid)
+                    HttpHeaders = javascript_headers()
             end,
 
             {ok, Req1} = cowboy_req:reply(200, HttpHeaders, <<Result2/binary>>, Req)
@@ -152,15 +152,13 @@ text_headers() ->
         {<<"Content-Type">>, <<"text/plain; charset=utf-8">>}
     ].
 
-stream_headers(IOCookie) ->
+stream_headers() ->
     [
-        {<<"Set-Cookie">>, <<"io=", IOCookie/binary>>},
         {<<"Content-Type">>, <<"application/octet-stream">>}
     ].
 
-javascript_headers(IOCookie) ->
+javascript_headers() ->
     [
-        {<<"Set-Cookie">>, <<"io=", IOCookie/binary>>},
         {<<"Content-Type">>, <<"text/javascript; charset=UTF-8">>},
         {<<"X-XSS-Protection">>, <<"0">>}
     ].
@@ -173,9 +171,8 @@ reply_messages(Req, Messages, _Config = #config{protocol = Protocol}, SendNop, 1
                      Protocol:encode_v1(Messages)
              end,
     PacketListBin = encode_polling_xhr_packets_v1(PacketList),
-    {CookieIo, _} = cowboy_req:cookie(<<"io">>, Req),
 
-    cowboy_req:reply(200, stream_headers(CookieIo), PacketListBin, Req);
+    cowboy_req:reply(200, stream_headers(), PacketListBin, Req);
 reply_messages(Req, Messages, _Config = #config{protocol = Protocol}, SendNop, 1, JsonP) ->
     PacketList = case {SendNop, Messages} of
                      {true, []} ->
@@ -184,9 +181,8 @@ reply_messages(Req, Messages, _Config = #config{protocol = Protocol}, SendNop, 1
                          Protocol:encode_v1(Messages)
                  end,
     PacketListBin = encode_polling_json_packets_v1(PacketList, JsonP),
-    {CookieIo, _} = cowboy_req:cookie(<<"io">>, Req),
 
-    cowboy_req:reply(200, javascript_headers(CookieIo), PacketListBin, Req);
+    cowboy_req:reply(200, javascript_headers(), PacketListBin, Req);
 reply_messages(Req, Messages, _Config = #config{protocol = Protocol}, SendNop, 0, _JsonP) ->
     Packet = case {SendNop, Messages} of
                  {true, []} ->
@@ -211,7 +207,7 @@ safe_unsub_caller(Pid, Caller) ->
             error
     end.
 
-safe_poll(Req, HttpState = #http_state{config = Config = #config{protocol = Protocol}, version = Version, jsonp = JsonP}, Pid, WaitIfEmpty) ->
+safe_poll(Req, HttpState = #http_state{config = Config, version = Version, jsonp = JsonP}, Pid, WaitIfEmpty) ->
     try
         Messages = socketio_session:poll(Pid),
         case {WaitIfEmpty, Messages} of
@@ -230,12 +226,8 @@ safe_poll(Req, HttpState = #http_state{config = Config = #config{protocol = Prot
                 {ok, Req1, HttpState}
         end
     catch
-        exit:{noproc, _} when Version =:= 1 ->
-            {CookieIo, _} = cowboy_req:cookie(<<"io">>, Req),
-            {ok, RD} = cowboy_req:reply(200, stream_headers(CookieIo), encode_polling_xhr_packets_v1(Protocol:encode_v1(disconnect)), Req),
-            {ok, RD, HttpState#http_state{action = disconnect}};
-        exit:{noproc, _} when Version =:= 0 ->
-            {ok, RD} = cowboy_req:reply(200, text_headers(), Protocol:encode(disconnect), Req),
+        exit:{noproc, _} ->
+            {ok, RD} = cowboy_req:reply(404, [], <<>>, Req),
             {ok, RD, HttpState#http_state{action = disconnect}}
     end.
 
@@ -262,34 +254,18 @@ handle_polling(Req, Sid, Config, Version, JsonP) ->
                     {ok, Req, #http_state{action = data, messages = Messages, config = Config, sid = Sid, pid = Pid, version = Version, jsonp = JsonP}}
             end;
         {{ok, Pid}, <<"POST">>} ->
-            Protocol = Config#config.protocol,
-            ReqData = case JsonP of
-                          undefined ->
-                              case cowboy_req:body(Req) of
-                                  {ok, Body, Req1} ->
-                                      {ok, Body, Req1};
-                                  {error, _} ->
-                                      error
-                              end;
-                          _Num ->
-                              case cowboy_req:body_qs(Req) of
-                                  {ok, PostVals, Req1} ->
-                                      Data = proplists:get_value(<<"d">>, PostVals),
-                                      {ok, Data, Req1};
-                                  {error, _} ->
-                                      error
-                              end
-                      end,
-            case ReqData of
+            case get_request_data(Req, JsonP) of
                 {ok, Data2, Req2} ->
+                    Protocol = Config#config.protocol,
                     DecodeMethod = case Version of
                                 0 -> decode;
                                 1 -> decode_v1
                             end,
+
                     Messages = case catch(Protocol:DecodeMethod(Data2)) of
                                    {'EXIT', _Reason} ->
                                        [];
-                                   {error, _} ->
+                                   {error, _Reason} ->
                                        [];
                                    Msgs ->
                                        Msgs
@@ -433,6 +409,27 @@ enable_cors(Req) ->
             cowboy_req:set_resp_header(<<"access-control-allow-credentials">>, <<"true">>, Req1)
     end.
 
+get_request_data(Req, JsonP) ->
+    case JsonP of
+        undefined ->
+            case cowboy_req:body(Req) of
+                {ok, Body, Req1} ->
+                    {ok, Body, Req1};
+                {error, _} ->
+                    error
+            end;
+        _Num ->
+            case cowboy_req:body_qs(Req) of
+                {ok, PostVals, Req1} ->
+                    Data = proplists:get_value(<<"d">>, PostVals),
+                    Data2 = binary:replace(Data, <<"\\\n">>, <<"\n">>, [global]),
+                    Data3 = binary:replace(Data2, <<"\\\\n">>, <<"\\n">>, [global]),
+                    {ok, Data3, Req1};
+                {error, _} ->
+                    error
+            end
+    end.
+
 encode_polling_xhr_packets_v1(PacketList) ->
     lists:foldl(fun(Packet, AccIn) ->
         PacketLen = [list_to_integer([D]) || D <- integer_to_list(byte_size(Packet))],
@@ -443,7 +440,12 @@ encode_polling_xhr_packets_v1(PacketList) ->
 encode_polling_json_packets_v1(PacketList, JsonP) ->
     Payload = lists:foldl(fun(Packet, AccIn) ->
         ResultLenBin = integer_to_binary(byte_size(Packet)),
-        Rs = binary:replace(Packet, <<"\"">>, <<"\\\"">>, [global]),
-        <<AccIn/binary, ResultLenBin/binary, ":", Rs/binary>>
+        Packet2 = escape_character(Packet, <<"\\">>),
+        Packet3 = escape_character(Packet2, <<"\"">>),
+        Packet4 = escape_character(Packet3, <<"\\n">>),
+        <<AccIn/binary, ResultLenBin/binary, ":", Packet4/binary>>
     end, <<>>, PacketList),
     <<"___eio[", JsonP/binary, "](\"", Payload/binary, "\");">>.
+
+escape_character(Data, CharBin) ->
+    binary:replace(Data, CharBin, <<"\\", CharBin/binary>>, [global]).
