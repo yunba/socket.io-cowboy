@@ -186,6 +186,14 @@ handle_call({unsub_caller, Caller}, _From, State = #state{caller = PrevCaller}) 
             {reply, ok, State, hibernate}
     end;
 
+handle_call({transport, websocket}, _From, State = #state{transport = polling, caller = Caller}) ->
+    case Caller of
+        undefined ->
+            ignore;
+        _ ->
+            send(self(), nop)
+    end,
+    {reply, ok, State#state{transport = websocket}, hibernate};
 handle_call({transport, Transport}, _From, State) ->
     {reply, ok, State#state{transport = Transport}, hibernate};
 
