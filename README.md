@@ -10,7 +10,7 @@ Licensed under the Apache License 2.0.
 ### Feauters
 
 * Supports 0.7+ version of [Socket.IO-client](https://github.com/Automattic/socket.io-client) up to latest - 1.3.5
-* Supports xhr-polling transport
+* Supports polling(jsonp & xhr) transport
 * Supports websocket transport
 * Supports SSL
 
