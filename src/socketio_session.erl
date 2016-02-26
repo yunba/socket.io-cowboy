@@ -121,7 +121,12 @@ upgrade_transport(Pid, Transport) ->
     gen_server:call(Pid, {transport, Transport}).
 
 transport(Pid) ->
-    gen_server:call(Pid, {transport}).
+    case safe_call(Pid, {transport}, infinity) of
+        {error, noproc} ->
+            noproc;
+        Result ->
+            Result
+    end.
 %%--------------------------------------------------------------------
 start_link(SessionId, SessionTimeout, Callback, Opts, PeerAddress) ->
     gen_server:start_link(?MODULE, [SessionId, SessionTimeout, Callback, Opts, PeerAddress], []).

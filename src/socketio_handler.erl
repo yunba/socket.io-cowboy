@@ -213,6 +213,9 @@ safe_poll(Req, HttpState = #http_state{config = Config, version = Version, jsonp
         case {WaitIfEmpty, Messages} of
             {true, []} when Version =:= 1 ->
                 case socketio_session:transport(Pid) of
+                    noproc ->
+                        {ok, Req1} = cowboy_req:reply(404, [], <<>>, Req),
+                        {ok, Req1, HttpState#http_state{action = disconnect}};
                     websocket ->
                         {ok, Req1} = reply_messages(Req, [], Config, true, Version, JsonP),
                         {ok, Req1, HttpState};
@@ -242,6 +245,8 @@ handle_polling(Req, Sid, Config, Version, JsonP) ->
                     {shutdown, Req, #http_state{action = error, config = Config, sid = Sid, version = Version, jsonp = JsonP}};
                 [] when Version =:= 1 ->
                     case socketio_session:transport(Pid) of
+                        noproc ->
+                            {shutdown, Req, #http_state{action = error, config = Config, sid = Sid, version = Version, jsonp = JsonP}};
                         websocket ->
                             {ok, Req, #http_state{action = data, messages = [nop], config = Config, sid = Sid, pid = Pid, version = Version, jsonp = JsonP}};
                         _ ->
