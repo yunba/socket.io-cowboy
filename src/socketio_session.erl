@@ -19,14 +19,16 @@
 -include("socketio_internal.hrl").
 
 %% API
--export([start_link/5, init_mnesia/0, configure/1, create/5, find/1, pull/2, pull_no_wait/2, poll/1, safe_poll/1, send/2, recv/2,
-         send_message/2, send_obj/2, emit/3, refresh/1, disconnect/1, unsub_caller/2, upgrade_transport/2, transport/1]).
+-export([start_link/5, init_storage/1, init_mnesia/0, configure/1,
+    create/5, find/1, find/2, pull/2, pull_no_wait/2, poll/1, safe_poll/1, send/2, recv/2,
+    send_message/2, send_obj/2, emit/3, refresh/1, disconnect/1, unsub_caller/2, upgrade_transport/2, transport/1]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
 -define(SESSION_PID_TABLE, socketio_session_to_pid).
+-define(SESSION_PID_TABLE_POOL, socketio_session_to_pid_pool).
 
 -record(?SESSION_PID_TABLE, {sid, pid}).
 
@@ -46,13 +48,25 @@
 %%% API
 %%%===================================================================
 configure(Opts) ->
+    ConfigOpts = proplists:get_value(opts, Opts, []),
     #config{heartbeat = proplists:get_value(heartbeat, Opts, 5000),
             heartbeat_timeout = proplists:get_value(heartbeat_timeout, Opts, 30000),
             session_timeout = proplists:get_value(session_timeout, Opts, 30000),
             callback = proplists:get_value(callback, Opts),
             protocol = proplists:get_value(protocol, Opts, socketio_data_protocol),
-            opts = proplists:get_value(opts, Opts, undefined)
-           }.
+            opts = #config_opts{
+                session_read_storage =  proplists:get_value(session_read_storage, ConfigOpts, mnesia),
+                session_write_storage = proplists:get_value(session_write_storage, ConfigOpts, mnesia)
+            }
+    }.
+
+init_storage(mnesia) ->
+    init_mnesia();
+init_storage(redis) ->
+    %% init by config
+    ok;
+init_storage(all) ->
+    init_mnesia().
 
 init_mnesia() ->
     init_table(?SESSION_PID_TABLE,
@@ -62,6 +76,24 @@ init_mnesia() ->
 create(SessionId, SessionTimeout, Callback, Opts, PeerAddress) ->
     {ok, Pid} = socketio_session_sup:start_child(SessionId, SessionTimeout, Callback, Opts, PeerAddress),
     Pid.
+
+find(SessionId, mnesia) ->
+    find(SessionId);
+find(SessionId, redis) ->
+    case catch redis_hapool:q(?SESSION_PID_TABLE_POOL, [<<"GET">>, SessionId]) of
+        {ok, undefined} ->
+            {error, not_found};
+        {ok, PidBin} ->
+            Pid = list_to_pid(binary_to_list(PidBin)),
+            case is_pid_alive(Pid) of
+                true -> {ok, Pid};
+                _ ->
+                    redis_hapool:q(?SESSION_PID_TABLE_POOL, [<<"DEL">>, SessionId]),
+                    {error, not_found}
+            end;
+        Error ->
+            Error
+    end.
 
 find(SessionId) ->
     case mnesia:dirty_read(?SESSION_PID_TABLE, SessionId) of
@@ -230,9 +262,21 @@ handle_cast(_Msg, State) ->
 handle_info(session_timeout, State) ->
     {stop, normal, State};
 
-handle_info(register_in_ets,
-    State = #state{id = SessionId, registered = false, callback = Callback, opts = Opts, peer_address = PeerAddress}) ->
-    case mnesia:dirty_write(#?SESSION_PID_TABLE{sid = SessionId, pid = self()}) of
+handle_info(register_in_ets, State = #state{
+    id = SessionId, callback = Callback, opts = Opts, peer_address = PeerAddress, registered = false
+}) ->
+    Result =
+        case Opts#config_opts.session_write_storage of
+            mnesia ->
+                register_in_mnesia(State);
+            redis ->
+                register_in_redis(State);
+            all ->
+                register_in_mnesia(State),
+                register_in_redis(State)
+        end,
+
+    case Result of
         ok ->
             send(self(), {connect, <<>>}),
             case Callback:open(self(), SessionId, Opts, PeerAddress) of
@@ -256,8 +300,19 @@ handle_info(Info, State = #state{id = Id, registered = true, callback = Callback
 handle_info(_Info, State) ->
     {noreply, State, hibernate}.
 %%--------------------------------------------------------------------
-terminate(_Reason, _State = #state{id = SessionId, registered = Registered, callback = Callback, session_state = SessionState}) ->
-    mnesia:dirty_delete(?SESSION_PID_TABLE, SessionId),
+terminate(_Reason, _State = #state{
+    id = SessionId, registered = Registered, callback = Callback, session_state = SessionState, opts = Opts
+}) ->
+    case Opts#config_opts.session_write_storage of
+        mnesia ->
+            mnesia:dirty_delete(?SESSION_PID_TABLE, SessionId);
+        redis ->
+            redis_hapool:q(?SESSION_PID_TABLE_POOL, [<<"DEL">>, SessionId]);
+        all ->
+            mnesia:dirty_delete(?SESSION_PID_TABLE, SessionId),
+            redis_hapool:q(?SESSION_PID_TABLE_POOL, [<<"DEL">>, SessionId])
+    end,
+
     case Registered of
         true ->
             Callback:close(self(), SessionId, SessionState),
@@ -282,7 +337,7 @@ refresh_session_timeout(State = #state{session_timeout = Timeout, session_timeou
 process_messages([], _State) ->
     {reply, ok, _State, hibernate};
 
-process_messages([Message|Rest], State = #state{id = SessionId, callback = Callback, session_state = SessionState}) ->
+process_messages([Message|Rest], State = #state{id = SessionId, callback = Callback, session_state = SessionState, opts = Opts}) ->
     case Message of
         {disconnect, _EndPoint} ->
             {stop, normal, ok, State};
@@ -291,8 +346,22 @@ process_messages([Message|Rest], State = #state{id = SessionId, callback = Callb
         disconnect ->
             {stop, normal, ok, State};
         heartbeat ->
+            %% update route table
+            case Opts#config_opts.session_write_storage of
+                redis ->
+                    register_in_redis(State);
+                all ->
+                    register_in_redis(State)
+            end,
             process_messages(Rest, State);
         {ping, Data} ->                    %% only for socketio v1
+            %% update route table
+            case Opts#config_opts.session_write_storage of
+                redis ->
+                    register_in_redis(State);
+                all ->
+                    register_in_redis(State)
+            end,
             send(self(), {pong, Data}),
             process_messages(Rest, State);
         {message, <<>>, EndPoint, Obj} ->
@@ -379,4 +448,20 @@ safe_call(Pid, Msg, Timeout) ->
     catch
         exit:{noproc, _} -> {error, noproc};
         exit:{normal, _} -> {error, noproc}
+    end.
+
+register_in_mnesia(#state{id = SessionId}) ->
+    case mnesia:dirty_write(#?SESSION_PID_TABLE{sid = SessionId, pid = self()}) of
+        ok ->
+            ok;
+        Error ->
+            Error
+    end.
+
+register_in_redis(#state{id = SessionId, session_timeout = SessionTTL}) ->
+    case catch redis_hapool:q(?SESSION_PID_TABLE_POOL, [<<"SETEX">>, SessionId, trunc(SessionTTL / 1000), list_to_binary(pid_to_list(self()))]) of
+        {ok, _} ->
+            ok;
+        Error ->
+            Error
     end.

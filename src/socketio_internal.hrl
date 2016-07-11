@@ -19,3 +19,8 @@
                  protocol,
                  opts
                 }).
+
+-record(config_opts, {
+    session_read_storage,
+    session_write_storage
+}).

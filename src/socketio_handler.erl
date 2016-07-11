@@ -236,7 +236,7 @@ safe_poll(Req, HttpState = #http_state{config = Config, version = Version, jsonp
 
 handle_polling(Req, Sid, Config, Version, JsonP) ->
     {Method, _} = cowboy_req:method(Req),
-    case {socketio_session:find(Sid), Method} of
+    case {socketio_session:find(Sid, Config#config.opts#config_opts.session_read_storage), Method} of
         {{ok, Pid}, <<"GET">>} ->
             case socketio_session:pull_no_wait(Pid, self()) of
                 {error, noproc} ->
@@ -295,7 +295,7 @@ websocket_init(_TransportName, Req, [Config]) ->
     {PathInfo, _} = cowboy_req:path_info(Req),
     case PathInfo of
         [<<"1">>, <<"websocket">>, Sid] ->
-            case socketio_session:find(Sid) of
+            case socketio_session:find(Sid, Config#config.opts#config_opts.session_read_storage) of
                 {ok, Pid} ->
                     erlang:monitor(process, Pid),
                     self() ! go,
@@ -307,7 +307,7 @@ websocket_init(_TransportName, Req, [Config]) ->
         _ ->
             case cowboy_req:qs_val(<<"sid">>, Req) of
                 {Sid, _} when is_binary(Sid) ->
-                    case socketio_session:find(Sid) of
+                    case socketio_session:find(Sid, Config#config.opts#config_opts.session_read_storage) of
                         {ok, Pid} ->
                             erlang:monitor(process, Pid),
                             socketio_session:upgrade_transport(Pid, websocket),
