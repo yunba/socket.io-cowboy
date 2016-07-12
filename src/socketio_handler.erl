@@ -81,10 +81,18 @@ handle(Req, HttpState = #http_state{action = create_session, version = Version, 
 
             case JsonP of
                 undefined ->
-                    ResultLen = [ list_to_integer([D]) || D <- integer_to_list(byte_size(Result) + 1) ],
-                    ResultLenBin = list_to_binary(ResultLen),
-                    Result2 = <<0, ResultLenBin/binary, 255, "0", Result/binary>>,
-                    HttpHeaders = stream_headers();
+                    {Result2, HttpHeaders} =
+                        case cowboy_req:header(<<"user-agent">>, Req) of
+                            {<<"node-XMLHttpRequest">>, _} ->
+                                %% nodejs client
+                                ResultLen = byte_size(Result) + 1,
+                                ResultLenBin = integer_to_binary(ResultLen),
+                                {<<ResultLenBin/binary, ":0", Result/binary>>, text_headers()};
+                            _ ->
+                                ResultLen = [list_to_integer([D]) || D <- integer_to_list(byte_size(Result) + 1)],
+                                ResultLenBin = list_to_binary(ResultLen),
+                                {<<0, ResultLenBin/binary, 255, "0", Result/binary>>, stream_headers()}
+                        end;
                 Num ->
                     ResultLenBin = integer_to_binary(byte_size(Result) + 1),
                     Rs = binary:replace(Result, <<"\"">>, <<"\\\"">>, [global]),
@@ -170,9 +178,16 @@ reply_messages(Req, Messages, _Config = #config{protocol = Protocol}, SendNop, 1
                  _ ->
                      Protocol:encode_v1(Messages)
              end,
-    PacketListBin = encode_polling_xhr_packets_v1(PacketList),
+    {PacketListBin, HttpHeaders} =
+        case cowboy_req:header(<<"user-agent">>, Req) of
+            {<<"node-XMLHttpRequest">>, _} ->
+                %% nodejs client
+                {encode_polling_packets_v1(PacketList), text_headers()};
+            _ ->
+                {encode_polling_xhr_packets_v1(PacketList), stream_headers()}
+        end,
 
-    cowboy_req:reply(200, stream_headers(), PacketListBin, Req);
+    cowboy_req:reply(200, HttpHeaders, PacketListBin, Req);
 reply_messages(Req, Messages, _Config = #config{protocol = Protocol}, SendNop, 1, JsonP) ->
     PacketList = case {SendNop, Messages} of
                      {true, []} ->
@@ -434,6 +449,13 @@ get_request_data(Req, JsonP) ->
                     error
             end
     end.
+
+encode_polling_packets_v1(PacketList) ->
+    lists:foldl(fun(Packet, AccIn) ->
+        PacketLen = byte_size(Packet),
+        ResultLenBin = integer_to_binary(PacketLen),
+        <<AccIn/binary, ResultLenBin/binary, ":", Packet/binary>>
+                end, <<>>, PacketList).
 
 encode_polling_xhr_packets_v1(PacketList) ->
     lists:foldl(fun(Packet, AccIn) ->
