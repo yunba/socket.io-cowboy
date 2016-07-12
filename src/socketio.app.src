@@ -13,7 +13,8 @@
 		ranch,
 		cowlib,
 		cowboy,
-		mnesia
+		mnesia,
+		snowflake
 	]},
 	{mod, {socketio, []}},
 	{env, []}

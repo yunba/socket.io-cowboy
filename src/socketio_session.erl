@@ -351,7 +351,9 @@ process_messages([Message|Rest], State = #state{id = SessionId, callback = Callb
                 redis ->
                     register_in_redis(State);
                 all ->
-                    register_in_redis(State)
+                    register_in_redis(State);
+                _ ->
+                    ignore
             end,
             process_messages(Rest, State);
         {ping, Data} ->                    %% only for socketio v1
@@ -360,7 +362,9 @@ process_messages([Message|Rest], State = #state{id = SessionId, callback = Callb
                 redis ->
                     register_in_redis(State);
                 all ->
-                    register_in_redis(State)
+                    register_in_redis(State);
+                _ ->
+                    ignore
             end,
             send(self(), {pong, Data}),
             process_messages(Rest, State);

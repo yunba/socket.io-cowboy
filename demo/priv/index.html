@@ -60,7 +60,7 @@
 
                         var jsonObject = {userName: userName,
                                           message: message};
-                        socket.json.send(jsonObject);
+                        socket.emit('message', jsonObject);
 		}
 
 		function output(message) {

@@ -5,6 +5,7 @@
 -record(session_state, {}).
 
 start() ->
+    ok = application:start(snowflake),
     ok = mnesia:start(),
     ok = socketio_session:init_mnesia(),
     ok = socketio:start(),

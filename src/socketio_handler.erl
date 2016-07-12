@@ -58,7 +58,8 @@ handle(Req, HttpState = #http_state{action = create_session, version = Version, 
     opts = Opts,
     callback = Callback
 }}) ->
-    Sid = uuids:new(),
+    <<SidInt:64/integer>> = snowflake:new(socketio),
+    Sid = integer_to_binary(SidInt),
     PeerAddress = cowboy_req:peer(Req),
 
     _Pid = socketio_session:create(Sid, SessionTimeout, Callback, Opts, PeerAddress),
