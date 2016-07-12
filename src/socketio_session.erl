@@ -80,15 +80,15 @@ create(SessionId, SessionTimeout, Callback, Opts, PeerAddress) ->
 find(SessionId, mnesia) ->
     find(SessionId);
 find(SessionId, redis) ->
-    case catch redis_hapool:q(?SESSION_PID_TABLE_POOL, [<<"GET">>, SessionId]) of
+    case catch redis_hapool:q(?SESSION_PID_TABLE_POOL, [<<"GET">>, <<"session-", SessionId/binary>>]) of
         {ok, undefined} ->
             {error, not_found};
         {ok, PidBin} ->
-            Pid = list_to_pid(binary_to_list(PidBin)),
+            Pid = binary_to_term(PidBin),
             case is_pid_alive(Pid) of
                 true -> {ok, Pid};
                 _ ->
-                    redis_hapool:q(?SESSION_PID_TABLE_POOL, [<<"DEL">>, SessionId]),
+                    redis_hapool:q(?SESSION_PID_TABLE_POOL, [<<"DEL">>, <<"session-", SessionId/binary>>]),
                     {error, not_found}
             end;
         Error ->
@@ -307,10 +307,10 @@ terminate(_Reason, _State = #state{
         mnesia ->
             mnesia:dirty_delete(?SESSION_PID_TABLE, SessionId);
         redis ->
-            redis_hapool:q(?SESSION_PID_TABLE_POOL, [<<"DEL">>, SessionId]);
+            redis_hapool:q(?SESSION_PID_TABLE_POOL, [<<"DEL">>, <<"session-", SessionId/binary>>]);
         all ->
             mnesia:dirty_delete(?SESSION_PID_TABLE, SessionId),
-            redis_hapool:q(?SESSION_PID_TABLE_POOL, [<<"DEL">>, SessionId])
+            redis_hapool:q(?SESSION_PID_TABLE_POOL, [<<"DEL">>, <<"session-", SessionId/binary>>])
     end,
 
     case Registered of
@@ -463,7 +463,7 @@ register_in_mnesia(#state{id = SessionId}) ->
     end.
 
 register_in_redis(#state{id = SessionId, session_timeout = SessionTTL}) ->
-    case catch redis_hapool:q(?SESSION_PID_TABLE_POOL, [<<"SETEX">>, SessionId, trunc(SessionTTL / 1000), list_to_binary(pid_to_list(self()))]) of
+    case catch redis_hapool:q(?SESSION_PID_TABLE_POOL, [<<"SETEX">>, <<"session-", SessionId/binary>>, trunc(SessionTTL / 1000), term_to_binary(self())]) of
         {ok, _} ->
             ok;
         Error ->
