@@ -455,12 +455,7 @@ safe_call(Pid, Msg, Timeout) ->
     end.
 
 register_in_mnesia(#state{id = SessionId}) ->
-    case mnesia:dirty_write(#?SESSION_PID_TABLE{sid = SessionId, pid = self()}) of
-        ok ->
-            ok;
-        Error ->
-            Error
-    end.
+    mnesia:dirty_write(#?SESSION_PID_TABLE{sid = SessionId, pid = self()}).
 
 register_in_redis(#state{id = SessionId, session_timeout = SessionTTL}) ->
     case catch redis_hapool:q(?SESSION_PID_TABLE_POOL, [<<"SETEX">>, <<"session-", SessionId/binary>>, trunc(SessionTTL / 1000), term_to_binary(self())]) of
