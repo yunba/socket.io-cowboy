@@ -88,7 +88,6 @@ find(SessionId, redis) ->
             case is_pid_alive(Pid) of
                 true -> {ok, Pid};
                 _ ->
-                    redis_hapool:q(?SESSION_PID_TABLE_POOL, [<<"DEL">>, <<"session-", SessionId/binary>>]),
                     {error, not_found}
             end;
         Error ->
