@@ -91,6 +91,7 @@ find(SessionId, redis) ->
                     {error, not_found}
             end;
         Error ->
+            error_logger:error_msg("find sessionid failed ~p~n", [Error]),
             Error
     end.
 
@@ -424,7 +425,7 @@ create_table(Table, Opts) ->
                     error_logger:info_msg("mnesia: create table ~p\n", [Table]),
                     ok;
                 {aborted, Reason} ->
-                    error_logger:error("mnesia: create table ~p fail: ~p\n", [Table, Reason]),
+                    error_logger:error_msg("mnesia: create table ~p fail: ~p\n", [Table, Reason]),
                     error
             end;
         true ->
