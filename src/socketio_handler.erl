@@ -408,7 +408,6 @@ websocket_info({message_arrived, Pid}, Req, State = #websocket_state{
 websocket_info({timeout, _TRef, {?MODULE, Pid}}, Req, State = #websocket_state{
     config = #config{protocol = Protocol, heartbeat = HeartBeat}, pid = Pid, version = 0
 }) ->
-    socketio_session:refresh(Pid),
     erlang:start_timer(HeartBeat, self(), {?MODULE, Pid}),
     Packet = Protocol:encode(heartbeat),
     {reply, {text, Packet}, Req, State, hibernate};
